@@ -141,7 +141,7 @@ test('weighted selection excludes last word and respects selected band', () => {
   assert.notEqual(pickWord(WORDS, first.answer, 'mixed', () => 0).answer, first.answer);
   const counts = {};
   for (let i=0;i<1000;i++) { const w=pickWord(WORDS, '', 'mixed', () => i/1000); counts[w.band]=(counts[w.band]||0)+1; }
-  assert.ok((counts.A2+counts.B1+counts.B2+counts.C1)>900);
+  assert.ok((counts.A1+counts.A2)>=800);
 });
 test('contained normalized answers score once per user per round within deadline', () => {
   const game=createGame(); startRound(game, {answer:'apple', band:'A1'}, 1000, 30);
@@ -325,4 +325,54 @@ test('member arrivals stay on one line without displacing comments and gifts', a
   state.connect();
   assert.equal(state.interactionActivity.value.length,0);
   assert.equal(state.participantActivity.value,null);
+});
+
+
+test('ABCD rounds have four unique shuffled choices and no hints', () => {
+  for(const random of [()=>0,()=>0.99]) {
+    const game=createGame();
+    startRound(game,WORDS[0],1000,30,random,'abcd',WORDS);
+    assert.equal(game.round.mode,'abcd');
+    assert.equal(game.round.choices.length,4);
+    assert.equal(new Set(game.round.choices.map(w=>w.answer)).size,4);
+    assert.equal(game.round.choices.filter(w=>w.answer===WORDS[0].answer).length,1);
+    for(const time of [1000,9000,13000]) assert.equal(roundHint(game.round,time).text,'');
+  }
+});
+test('ABCD accepts only an exact case-insensitive letter with timed deferred scores', () => {
+  const game=createGame();
+  startRound(game,WORDS[0],1000,30,()=>0,'abcd',WORDS);
+  const key='abcd'[game.round.choices.findIndex(w=>w.answer===WORDS[0].answer)];
+  for(const comment of [key+'!',key+' ', ' '+key, 'đáp án '+key,key+key,WORDS[0].answer,'á'])
+    assert.equal(acceptChat(game,{userId:'invalid',comment},2000,true),0);
+  const base=POINTS[WORDS[0].band];
+  for(const [id,time,divisor] of [['early',8999,1],['middle',9000,2],['late',13000,3]])
+    assert.equal(acceptChat(game,{userId:id,comment:key.toUpperCase()},time,true),Math.floor(base/divisor));
+  assert.equal(acceptChat(game,{userId:'early',comment:key},14000,true),0);
+  assert.equal(acceptChat(game,{userId:'expired',comment:key},31000,true),0);
+  assert.equal(Object.keys(game.players).length,0);
+  game.round.revealed=true;
+  assert.equal(acceptChat(game,{userId:'closed',comment:key},14000,true),0);
+  assert.equal(settleRound(game).length,3);
+});
+
+test('selected mode is captured when starting each quiz round', async () => {
+  const {readFile}=await import('node:fs/promises');
+  const {runInNewContext}=await import('node:vm');
+  const source=await readFile(new URL('../components/EnglishQuiz.vue',import.meta.url),'utf8');
+  const script=source.match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*;$/gm,'');
+  const state=runInNewContext(script+'; ({mode,game,startQuiz,running});',{
+    ref:value=>({value}),computed:get=>({get value(){return get();}}),
+    createGame,startRound,roundHint,drawWord,POINTS,WORDS,saveGame,
+    watch:()=>{},onMounted:()=>{},onBeforeUnmount:()=>{},window:{localStorage:{setItem(){}}},
+  });
+  state.mode.value='abcd'; state.startQuiz();
+  assert.equal(state.running.value,true);
+  assert.equal(state.game.value.round.mode,'abcd');
+  assert.equal(state.game.value.round.choices.length,4);
+  state.mode.value='text';
+  assert.equal(state.game.value.round.mode,'abcd');
+  state.startQuiz();
+  assert.equal(state.game.value.round.mode,'text');
+  assert.match(source,/v-model="mode" :disabled="running \|\| resultsOpen/);
 });

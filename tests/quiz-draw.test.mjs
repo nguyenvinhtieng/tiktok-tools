@@ -49,6 +49,16 @@ test('changing band preserves exclusions and does not reset an exhausted band', 
   assert.ok(!remaining.includes(third.answer));
 });
 
+test('saved decks discard answers removed from the vocabulary before refilling', () => {
+  const game = createGame();
+  game.deck = { remaining: ['apple', 'coffee maker'], cycle: 1, last: 'bread' };
+  assert.equal(drawWord(game, fixture, 'A1', () => 0).answer, 'apple');
+  assert.deepEqual(game.deck.remaining, []);
+  assert.ok(drawWord(game, fixture, 'mixed', () => 0));
+  assert.equal(game.deck.cycle, 2);
+  assert.ok(!game.deck.remaining.includes('coffee maker'));
+});
+
 test('full depletion refills the deck for the next cycle', () => {
   const game = createGame();
   for (let i = 0; i < fixture.length; i++) drawWord(game, fixture, 'mixed', () => 0);
@@ -82,13 +92,13 @@ test('a new game starts a fresh deck without retaining another game exclusions',
   assert.equal(second.deck.remaining.length, fixture.length - 1);
 });
 
-test('initial mixed draws prioritize A2 through C1', () => {
+test('initial mixed draws prioritize easy A1 and A2 words', () => {
   let preferred = 0;
   for (let i = 0; i < 1000; i++) {
     const word = drawWord(createGame(), fixture, 'mixed', () => i / 1000);
-    if (['A2', 'B1', 'B2', 'C1'].includes(word.band)) preferred++;
+    if (['A1', 'A2'].includes(word.band)) preferred++;
   }
-  assert.ok(preferred > 900, `${preferred}/1000 preferred-band draws`);
+  assert.ok(preferred >= 800, `${preferred}/1000 easy-band draws`);
 });
 
 test('empty word lists and unavailable bands return null safely', () => {

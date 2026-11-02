@@ -1,5 +1,5 @@
 export const POINTS = { A1:10, A2:20, B1:30, B2:40, C1:50, C2:70 };
-const WEIGHTS = { A1:3, A2:27, B1:28, B2:25, C1:15, C2:2 };
+const WEIGHTS = { A1:50, A2:30, B1:12, B2:5, C1:2, C2:1 };
 export const normalize = value => String(value || '').normalize('NFKD').replace(/\p{M}/gu,'').replace(/[đĐ]/g,'d').trim().toLowerCase().replace(/^[\s.!?,;:]+|[\s.!?,;:]+$/g, '').replace(/\s+/g,' ');
 export function pickWord(words, previous='', band='mixed', random=Math.random) {
   const pool=words.filter(w => w.answer !== previous && (band==='mixed' || w.band===band));
@@ -13,8 +13,10 @@ export function createGame() { return {players:Object.create(null), round:null, 
 export function drawWord(game, words, band='mixed', random=Math.random) {
   if (!words.length || !words.some(word => band==='mixed' || word.band===band)) return null;
   const deck=game.deck;
+  const answers=new Set(words.map(word=>word.answer));
+  if (deck.remaining) deck.remaining=deck.remaining.filter(answer=>answers.has(answer));
   if (!deck.remaining?.length) {
-    deck.remaining=[...new Set(words.map(word=>word.answer))];
+    deck.remaining=[...answers];
     deck.cycle++;
   }
   const remaining=new Set(deck.remaining);
@@ -26,10 +28,30 @@ export function drawWord(game, words, band='mixed', random=Math.random) {
   deck.last=word.answer;
   return word;
 }
-export function startRound(game, word, now=Date.now(), seconds=30, random=Math.random) {
+export function startRound(game, word, now=Date.now(), seconds=30, random=Math.random, mode='text', words=[]) {
+  let choices=[];
+  if(mode==='abcd') {
+    const seen=new Set([normalize(word.answer),...(word.aliases || []).map(normalize)]);
+    const candidates=words.filter(candidate=>{
+      const answers=[candidate.answer,...(candidate.aliases || [])].map(normalize);
+      if(answers.some(answer=>seen.has(answer)) || (word.vi && candidate.vi===word.vi)) return false;
+      answers.forEach(answer=>seen.add(answer));
+      return true;
+    });
+    for(let i=candidates.length-1;i>0;i--) {
+      const j=Math.floor(random()*(i+1));
+      [candidates[i],candidates[j]]=[candidates[j],candidates[i]];
+    }
+    if(candidates.length<3) throw new Error('Cần ít nhất 4 đáp án khác nhau cho chế độ ABCD.');
+    choices=[word,...candidates.slice(0,3)];
+    for(let i=choices.length-1;i>0;i--) {
+      const j=Math.floor(random()*(i+1));
+      [choices[i],choices[j]]=[choices[j],choices[i]];
+    }
+  }
   const letters=Array.from(word.answer).flatMap((letter,index)=>/\p{L}/u.test(letter) ? [index] : []);
   const candidates=letters.slice(1);
-  game.round={word, deadline:now+seconds*1000, seconds, answered:[], results:[], settled:false, revealed:false,
+  game.round={word, mode, choices, deadline:now+seconds*1000, seconds, answered:[], results:[], settled:false, revealed:false,
     hintLetters:[letters[0],candidates[Math.floor(random()*candidates.length)]].filter(index=>index!==undefined)};
 }
 export function roundHint(round, now=Date.now()) {
@@ -38,7 +60,7 @@ export function roundHint(round, now=Date.now()) {
   const visible=new Set((round.hintLetters || []).slice(0,divisor-1));
   const text=Array.from(round.word.answer).map((letter,index)=>
     /\s/u.test(letter) ? '/' : /\p{L}/u.test(letter) && !visible.has(index) ? '_' : letter).join(' ');
-  return {text,divisor,points:Math.floor(POINTS[round.word.band]/divisor)};
+  return {text:round.mode==='abcd' ? '' : text,divisor,points:Math.floor(POINTS[round.word.band]/divisor)};
 }
 function identity(data) {
   const user=data.user || data;
@@ -56,7 +78,10 @@ export function acceptChat(game, data, now=Date.now(), defer=false) {
   const round=game.round, user=identity(data);
   if (!user.id || !round || round.revealed || now>=round.deadline || round.answered.includes(user.id)) return 0;
   const comment=normalize(data.comment);
-  if (![round.word.answer,...(round.word.aliases || [])].some(a=>normalize(a) && comment.includes(normalize(a)))) return 0;
+  if(round.mode==='abcd') {
+    const key=String(data.comment || '').toLowerCase();
+    if(!/^[abcd]$/.test(key) || round.choices?.[key.charCodeAt(0)-97]?.answer!==round.word.answer) return 0;
+  } else if (![round.word.answer,...(round.word.aliases || [])].some(a=>normalize(a) && comment.includes(normalize(a)))) return 0;
   const points=roundHint(round,now).points;
   if(defer) {
     (round.results ||= []).push({...user,points,time:now,elapsed:now-(round.deadline-round.seconds*1000)});

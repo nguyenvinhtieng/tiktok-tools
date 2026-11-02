@@ -4,7 +4,9 @@ import { WORDS, SOURCES, VOCABULARY } from '../utils/quiz-words.mjs';
 import { POINTS, createGame, startRound, roundHint, drawWord, acceptChat, settleRound, acceptGift, giftCoins, saveGame, restoreGame } from '../utils/quiz.mjs';
 const url=ref(''), status=ref('Chưa kết nối'), error=ref(''), active=ref(false), connected=ref(false);
 const game=ref(createGame()), band=ref('mixed'), seconds=ref(30), giftRate=ref(10), auto=ref(true), running=ref(false);
-const now=ref(Date.now()), screen=ref(null), fullscreen=ref(false), feed=ref([]);
+const mode=ref('text');
+const choiceMode=computed(()=>(round.value?.mode || mode.value)==='abcd');
+const now=ref(Date.now()), screen=ref(null), fullscreen=ref(false), pinned=ref(false), feed=ref([]);
 const answerPreview=ref(false), rankChanges=ref({}), failedAvatars=ref({});
 const activity=ref([]), interactionActivity=ref([]), participantActivity=ref(null);
 const interactionRows=ref(null);
@@ -30,6 +32,7 @@ const timeRatio=computed(()=>round.value ? remainingMs.value/(round.value.second
 const ranking=computed(()=>Object.values(game.value.players).sort((a,b)=>b.score-a.score || b.correct-a.correct || a.id.localeCompare(b.id)));
 const hint=computed(()=>round.value ? roundHint(round.value,now.value) : null);
 const roundResults=computed(()=>[...(round.value?.results || [])].sort((a,b)=>a.time-b.time));
+const correctIndex=computed(()=>round.value?.choices?.findIndex(choice=>choice.answer===round.value.word.answer) ?? -1);
 const RING=2*Math.PI*44;
 const CONFETTI=Array.from({length:36},(_,i)=>({id:i,style:{left:`${(i*53)%100}%`,animationDelay:`${(i*137%900)/1000}s`,animationDuration:`${2.4+(i%5)*.4}s`,background:['#ffd60a','#fe2c55','#25f4ee','#2bd576','#ffffff'][i%5],'--r':`${i*47%360}deg`}}));
 const hintWords=computed(()=>{
@@ -86,7 +89,7 @@ function next() {
   const word=drawWord(game.value,WORDS,band.value);
   if(!word) { stop(); error.value='Band này đã hết từ trong lượt hiện tại. Chọn band khác hoặc Ngẫu nhiên để tiếp tục; bộ từ chỉ reset khi đã rút hết tất cả.'; return; }
   error.value=''; answerPreview.value=false; now.value=Date.now(); nextAt=0;
-  startRound(game.value,word,now.value,seconds.value);
+  startRound(game.value,word,now.value,seconds.value,Math.random,mode.value,WORDS);
   running.value=true;
 }
 function reveal() {
@@ -127,8 +130,12 @@ function connect() {
   current.onerror=()=>{ if(source!==current) return; disconnect(); error.value='Kết nối gián đoạn. Kiểm tra LIVE rồi kết nối lại.'; };
 }
 async function toggleFullscreen() {
-  try { if(document.fullscreenElement) await document.exitFullscreen(); else await screen.value.requestFullscreen(); }
-  catch { error.value='Trình duyệt không cho phép mở toàn màn hình.'; }
+  if(pinned.value) { pinned.value=false; return; }
+  try {
+    if(document.fullscreenElement) await document.exitFullscreen();
+    else if(screen.value.requestFullscreen) await screen.value.requestFullscreen();
+    else pinned.value=true;
+  } catch { pinned.value=true; }
 }
 function syncFullscreen() { fullscreen.value=document.fullscreenElement===screen.value; }
 function reset() { if(!window.confirm('Xóa toàn bộ điểm và bắt đầu phiên mới?')) return; disconnect(); resultsOpen.value=false; awardAt=0; awardsUntil=0; scoreAwards.value={}; sessionStarted=true; loadPrevious.value=false; game.value=createGame(); feed.value=[]; answerPreview.value=false; failedAvatars.value={}; }
@@ -161,6 +168,7 @@ onBeforeUnmount(()=>{ disconnect(); finishResults(); clearInterval(timer); clear
       <section class="console-card">
         <h3>Cài đặt câu hỏi</h3>
         <div class="settings">
+          <label>Chế độ chơi <select v-model="mode" :disabled="running || resultsOpen || Object.keys(scoreAwards).length>0"><option value="text">Trả lời từ tiếng Anh</option><option value="abcd">Chọn A/B/C/D</option></select></label>
           <label>Band <select v-model="band"><option value="mixed">Ngẫu nhiên · ưu tiên A2–C1</option><option v-for="b in Object.keys(POINTS)" :key="b" :value="b" :disabled="!bandCounts[b]">{{ b }} · {{ bandCounts[b] }} từ</option></select></label>
           <label>Thời gian <select v-model.number="seconds"><option :value="15">15 giây</option><option :value="30">30 giây</option><option :value="45">45 giây</option><option :value="60">60 giây</option></select></label>
           <label>Điểm / xu quà <select v-model.number="giftRate" :disabled="active"><option v-for="n in [1,5,10]" :key="n" :value="n">{{ n }}</option></select></label>
@@ -177,15 +185,15 @@ onBeforeUnmount(()=>{ disconnect(); finishResults(); clearInterval(timer); clear
     </div>
     <p v-if="error" role="alert" class="error">{{ error }}</p>
 
-    <section ref="screen" class="arena">
+    <section ref="screen" class="arena" :class="{full:fullscreen || pinned,pinned}" @keydown.esc="pinned=false">
       <div class="stage-top">
         <div class="show-title"><span class="live-tag" :class="{on:connected}">LIVE</span><strong>Đoán từ tiếng Anh</strong></div>
         <ol class="how-to">
           <li><b>1</b>Đọc nghĩa tiếng Việt</li>
-          <li><b>2</b>Comment từ tiếng Anh</li>
+          <li><b>2</b>{{ choiceMode ? 'Comment A, B, C hoặc D' : 'Comment từ tiếng Anh' }}</li>
           <li><b>3</b>Càng nhanh càng nhiều điểm</li>
         </ol>
-        <button type="button" class="fs-btn" @click="toggleFullscreen">{{ fullscreen ? 'Thu nhỏ' : 'Toàn màn hình' }}</button>
+        <button type="button" class="fs-btn" :aria-label="fullscreen || pinned ? 'Thu nhỏ' : 'Toàn màn hình'" @click="toggleFullscreen">{{ fullscreen || pinned ? 'Thu nhỏ' : 'Toàn màn hình' }}</button>
       </div>
 
       <div class="play-grid">
@@ -205,7 +213,14 @@ onBeforeUnmount(()=>{ disconnect(); finishResults(); clearInterval(timer); clear
               <p class="prompt-label">Từ tiếng Anh của</p>
               <Transition name="question" mode="out-in"><h3 :key="round.deadline">{{ round.word.vi }}</h3></Transition>
             </div>
-            <div class="answer-slot" tabindex="0" :aria-label="round.revealed ? `Đáp án: ${round.word.answer}` : `Gợi ý: ${hint.text}`">
+            <div v-if="round.mode==='abcd'" class="answer-choices" :class="{revealed:round.revealed}" aria-label="Các lựa chọn">
+              <div v-for="(choice,index) in round.choices" :key="`${round.deadline}-${choice.answer}`" class="answer-choice" :class="[`choice-${'abcd'[index]}`,{correct:round.revealed && index===correctIndex,wrong:round.revealed && index!==correctIndex}]" :style="{animationDelay:`${index*.07}s`}">
+                <b class="choice-key">{{ 'ABCD'[index] }}</b>
+                <span class="choice-text">{{ choice.answer }}</span>
+                <span v-if="round.revealed && index===correctIndex" class="choice-check" aria-label="Đáp án đúng"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5 10 17 19 7"/></svg></span>
+              </div>
+            </div>
+            <div v-else class="answer-slot" tabindex="0" :aria-label="round.revealed ? `Đáp án: ${round.word.answer}` : `Gợi ý: ${hint.text}`">
               <div class="letters" :style="{'--n':Math.max(...hintWords.map(word=>word.length))}">
                 <span v-for="(word,w) in hintWords" :key="`${round.deadline}-${w}`" class="letter-word">
                   <span v-for="(letter,i) in word" :key="`${i}-${letter}`" class="letter-tile" :class="{revealed:letter!=='_'}" :style="round.revealed ? {animationDelay:`${(w*4+i)*.04}s`} : null">{{ letter==='_' ? '' : letter }}</span>
@@ -213,21 +228,27 @@ onBeforeUnmount(()=>{ disconnect(); finishResults(); clearInterval(timer); clear
               </div>
             </div>
             <div class="q-foot">
-              <span>{{ hintWords.length }} từ · {{ round.word.answer.replace(/\s/g,'').length }} chữ cái</span>
-              <span :key="round.answered.length" class="solved-count" :class="{some:round.answered.length}">{{ round.answered.length }} người đã đoán đúng</span>
+              <span v-if="round.mode!=='abcd'" class="q-meta">{{ hintWords.length }} từ · {{ round.word.answer.replace(/\s/g,'').length }} chữ cái</span>
+              <span v-if="round.mode==='abcd'" class="q-meta">Comment đúng một chữ A, B, C hoặc D</span>
+              <span :key="round.answered.length" class="solved-count" :class="{some:round.answered.length}">{{ round.answered.length }} người<span class="wide-only"> đã đoán</span> đúng</span>
             </div>
           </template>
           <div v-else class="lobby">
             <p class="lobby-kicker">Mini game trên LIVE</p>
             <h3>Đoán từ<br>tiếng Anh</h3>
-            <div class="lobby-demo" aria-label="Ví dụ: quả táo, comment apple">
+            <div v-if="choiceMode" class="lobby-demo" aria-label="Ví dụ: quả táo, comment B nếu B là apple">
+              <span class="demo-vi">“quả táo”</span>
+              <span class="demo-arrow" aria-hidden="true">→</span>
+              <span class="demo-keys"><i class="choice-a">A</i><i class="choice-b pick">B</i><i class="choice-c">C</i><i class="choice-d">D</i></span>
+            </div>
+            <div v-else class="lobby-demo" aria-label="Ví dụ: quả táo, comment apple">
               <span class="demo-vi">“quả táo”</span>
               <span class="demo-arrow" aria-hidden="true">→</span>
               <span class="demo-tiles"><i>a</i><i>p</i><i>p</i><i>l</i><i>e</i></span>
             </div>
             <p class="lobby-note">Host sắp bắt đầu. Chuẩn bị comment nhé!</p>
           </div>
-          <p class="comment-cta"><span class="bubble" aria-hidden="true"/>Comment đáp án <em>tiếng Anh</em> để ghi điểm</p>
+          <p class="comment-cta"><span class="bubble" aria-hidden="true"/>Comment<span class="wide-only"> đáp án</span> <em>{{ choiceMode ? 'A, B, C hoặc D' : 'tiếng Anh' }}</em><span class="cta-tail"> để ghi điểm</span></p>
         </div>
 
         <div class="side">
@@ -254,7 +275,7 @@ onBeforeUnmount(()=>{ disconnect(); finishResults(); clearInterval(timer); clear
           </aside>
           <div class="gift-strip" aria-live="polite">
             <TransitionGroup v-if="feed.length" name="feed" tag="div" class="ticker"><p v-for="item in feed.slice(0,1)" :key="item.id"><span class="gift-icon" aria-hidden="true"/>{{ item.text }}</p></TransitionGroup>
-            <p v-else class="gift-tip"><span class="gift-icon" aria-hidden="true"/>Tặng quà để cộng điểm · 1 xu quà = {{ giftRate }} điểm</p>
+            <p v-else class="gift-tip"><span class="gift-icon" aria-hidden="true"/><span class="wide-only">Tặng quà để cộng điểm · </span>1 xu quà = {{ giftRate }} điểm</p>
           </div>
           <section class="live-activity">
             <div class="activity-heading"><span>Bình luận</span><span class="conn" :class="{online:connected}">{{ connected ? 'Đang kết nối' : 'Chưa kết nối' }}</span></div>
@@ -275,7 +296,7 @@ onBeforeUnmount(()=>{ disconnect(); finishResults(); clearInterval(timer); clear
           <div v-if="roundResults.length" class="confetti" aria-hidden="true"><i v-for="c in CONFETTI" :key="c.id" :style="c.style"/></div>
           <section class="round-results" role="dialog" aria-modal="true" aria-labelledby="round-results-title" tabindex="0">
             <p class="stamp">Hết giờ!</p>
-            <p id="round-results-title" class="result-label">Đáp án là</p>
+            <p id="round-results-title" class="result-label">Đáp án là<b v-if="round.mode==='abcd' && correctIndex>=0" class="result-key" :class="`choice-${'abcd'[correctIndex]}`">{{ 'ABCD'[correctIndex] }}</b></p>
             <p class="result-answer" :aria-label="round.word.answer"><span v-for="(ch,i) in Array.from(round.word.answer)" :key="i" :class="{gap:ch===' '}" :style="{animationDelay:`${.35+i*.05}s`}" aria-hidden="true">{{ ch }}</span></p>
             <p class="result-meaning">{{ round.word.vi }}</p>
             <ol v-if="roundResults.length" class="result-list">
@@ -290,7 +311,7 @@ onBeforeUnmount(()=>{ disconnect(); finishResults(); clearInterval(timer); clear
             <p v-if="roundResults.length>8" class="result-more">và {{ roundResults.length-8 }} người khác cũng đúng</p>
             <div v-if="!roundResults.length" class="no-winner"><strong>Chưa ai đoán ra!</strong><span>Câu tiếp theo là cơ hội của bạn.</span></div>
             <div class="result-timer" aria-hidden="true"><span/></div>
-            <p class="result-footer">{{ roundResults.length ? `${roundResults.length} người trả lời đúng · ` : '' }}Cộng điểm sau {{ Math.max(0,Math.ceil((awardAt-now)/1000)) }} giây</p>
+            <p class="result-footer"><span v-if="roundResults.length" class="wide-only">{{ roundResults.length }} người trả lời đúng · </span>Cộng điểm sau {{ Math.max(0,Math.ceil((awardAt-now)/1000)) }} giây</p>
           </section>
         </div>
       </Transition>
@@ -328,7 +349,8 @@ button:disabled{opacity:.45;cursor:not-allowed}
   position:relative;display:flex;flex-direction:column;gap:16px;padding:20px;border-radius:20px;overflow:hidden;color:#fff;
   background-color:var(--stage);background-image:radial-gradient(#ffffff0f 1px,transparent 1px);background-size:22px 22px}
 .arena::backdrop{background:#141225}
-.arena:fullscreen{width:100vw;height:100dvh;border-radius:0;padding:clamp(14px,2vw,28px)}
+.arena.full{width:100vw;height:100dvh;border-radius:0;padding:clamp(14px,2vw,28px)}
+.arena.pinned{position:fixed;inset:0;z-index:1000;padding-top:max(clamp(14px,2vw,28px),env(safe-area-inset-top));padding-bottom:max(clamp(14px,2vw,28px),env(safe-area-inset-bottom))}
 
 .stage-top{display:flex;align-items:center;gap:12px 20px;flex-wrap:wrap}
 .show-title{display:flex;align-items:center;gap:12px}
@@ -342,14 +364,14 @@ button:disabled{opacity:.45;cursor:not-allowed}
 .how-to li:nth-child(2) b{background:var(--pink);color:#fff}.how-to li:nth-child(3) b{background:var(--yellow)}
 .fs-btn{padding:8px 12px;border:1px solid var(--line);border-radius:8px;background:transparent;color:var(--muted);font-size:12px;font-weight:600}
 .fs-btn:hover{color:#fff;border-color:#5a5480}
-.arena:fullscreen .fs-btn{position:absolute;top:10px;right:10px;z-index:30;background:var(--stage);opacity:0;transition:opacity .2s}.arena:fullscreen .fs-btn:hover,.arena:fullscreen .fs-btn:focus-visible{opacity:1}
+.arena.full .fs-btn{position:absolute;top:10px;right:10px;z-index:30;background:var(--stage);opacity:0;transition:opacity .2s}.arena.full .fs-btn:hover,.arena.full .fs-btn:focus-visible{opacity:1}
 
 .play-grid{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(300px,1fr);gap:18px;min-height:0}
-.arena:fullscreen .play-grid{flex:1}
+.arena.full .play-grid{flex:1}
 
 /* Question card */
 .question{position:relative;display:flex;flex-direction:column;min-width:0;min-height:600px;padding:22px 26px 0;border:3px solid #000;border-radius:20px;background:var(--paper);color:var(--ink);box-shadow:0 8px 0 #000;overflow:hidden}
-.arena:fullscreen .question{min-height:0}
+.arena.full .question{min-height:0}
 .q-top{display:flex;align-items:center;gap:14px}
 .level{flex-shrink:0;display:flex;flex-direction:column;align-items:center;justify-content:center;width:66px;height:66px;border-radius:14px;background:var(--ink);color:#fff}
 .level span{font-size:10px;font-weight:600;text-transform:uppercase;color:#bdb8d9}
@@ -372,6 +394,26 @@ button:disabled{opacity:.45;cursor:not-allowed}
 .prompt-label{margin:0;text-align:center;font-size:14px;font-weight:700;color:#8a8370}
 .question-text-slot{flex:1 1 0;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;min-height:0;padding-bottom:18px;text-align:center}
 .question h3{margin:6px 0 0;font-size:clamp(34px,4.4vw,64px);font-weight:800;line-height:1.12;letter-spacing:-1.5px;overflow-wrap:anywhere}
+.choice-a{--c:var(--pink);--on:#fff}.choice-b{--c:var(--cyan);--on:var(--ink)}.choice-c{--c:var(--yellow);--on:var(--ink)}.choice-d{--c:#8b5cf6;--on:#fff}
+.answer-choices{flex:1 0 auto;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));grid-auto-rows:minmax(76px,auto);align-content:start;gap:14px;padding:4px 4px 12px}
+.answer-choice{position:relative;display:flex;align-items:center;gap:14px;min-width:0;padding:12px 18px 12px 12px;border:3px solid #000;border-radius:16px;background:var(--c);color:var(--on);box-shadow:0 5px 0 #000;animation:choice-in .45s cubic-bezier(.2,1.4,.4,1) both;transition:opacity .35s,filter .35s,transform .35s}
+.choice-key{flex-shrink:0;display:grid;place-items:center;width:48px;height:48px;border:2px solid #000;border-radius:12px;background:#fff;color:var(--ink);font-size:26px;font-weight:800}
+.choice-text{flex:1;min-width:0;font-size:clamp(18px,2.2vw,32px);font-weight:800;line-height:1.15;letter-spacing:-.5px;overflow-wrap:anywhere}
+.answer-choice.wrong{animation:none;opacity:.3;filter:grayscale(1);transform:scale(.95)}
+.answer-choice.correct{z-index:1;outline:4px solid var(--green);outline-offset:3px;animation:choice-win .7s cubic-bezier(.2,1.6,.4,1) both}
+.choice-check{position:absolute;top:-16px;right:-12px;display:grid;place-items:center;width:40px;height:40px;border:3px solid #000;border-radius:50%;background:var(--green);animation:check-pop .5s .25s cubic-bezier(.2,1.8,.4,1) both}
+.choice-check svg{width:22px;fill:none;stroke:var(--ink);stroke-width:3.5;stroke-linecap:round;stroke-linejoin:round}
+.demo-keys{display:flex;gap:6px}
+.demo-keys i{display:grid;place-items:center;width:38px;height:38px;border:2px solid #000;border-radius:10px;background:var(--c);color:var(--on);font-style:normal;font-size:20px;font-weight:800;opacity:.35}
+.demo-keys i.pick{opacity:1;box-shadow:0 4px 0 #000;outline:3px solid var(--green);outline-offset:2px;animation:choice-win .7s .3s cubic-bezier(.2,1.6,.4,1) both}
+.result-key{display:inline-grid;place-items:center;width:30px;height:30px;margin-left:8px;border:2px solid #000;border-radius:8px;background:var(--c);color:var(--on);font-size:17px;font-weight:800;vertical-align:middle;animation:check-pop .5s .3s cubic-bezier(.2,1.8,.4,1) both}
+.arena.full .answer-choices{grid-auto-rows:minmax(min(13vh,120px),auto)}
+.arena.full .choice-text{font-size:clamp(20px,min(2.6vw,4.8vh),48px)}
+.arena.full .choice-key{width:min(64px,7vh);height:min(64px,7vh);font-size:min(34px,3.8vh)}
+@keyframes choice-in{0%{opacity:0;transform:translateY(18px) scale(.92)}100%{opacity:1;transform:none}}
+@keyframes choice-win{0%{transform:scale(1)}45%{transform:scale(1.08) rotate(-1.5deg)}100%{transform:scale(1.03)}}
+@keyframes check-pop{0%{opacity:0;transform:scale(0) rotate(-60deg)}100%{opacity:1;transform:none}}
+@media (max-width:520px){.answer-choices{gap:10px}.answer-choice{gap:8px;padding:10px}.choice-key{width:36px;height:36px;font-size:20px}}
 .answer-slot{flex:1 0 auto;display:grid;place-items:start center;min-height:0;overflow:auto;container-type:inline-size}
 .letters{--max:52px;--tile:min(var(--max),calc((100cqw - (var(--n) - 1) * 6px) / var(--n)));display:flex;flex-wrap:wrap;justify-content:center;gap:12px 24px;padding:4px 0 14px}
 .letter-word{display:flex;justify-content:center;gap:6px}
@@ -527,25 +569,25 @@ button:disabled{opacity:.45;cursor:not-allowed}
 @keyframes feed-in{0%{opacity:0;transform:translateY(100%)}100%{opacity:1;transform:none}}
 
 /* Fullscreen fits one screen; big type for viewers on phones. */
-.arena:fullscreen .question h3{font-size:clamp(34px,min(5vw,8vh),92px)}
-.arena:fullscreen .letters{--max:min(76px,8vh)}
-.arena:fullscreen .live-activity{flex-basis:clamp(150px,26vh,280px)}
+.arena.full .question h3{font-size:clamp(34px,min(5vw,8vh),92px)}
+.arena.full .letters{--max:min(76px,8vh)}
+.arena.full .live-activity{flex-basis:clamp(150px,26vh,280px)}
 @media (orientation:portrait){
-  .arena:fullscreen .how-to{width:100%;margin:0}
-  .arena:fullscreen .play-grid{grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,1.5fr) minmax(0,1fr)}
-  .arena:fullscreen .lb-head h3,.arena:fullscreen .lb-head span{white-space:nowrap}
-  .arena:fullscreen .leaderboard{padding:12px}
-  .arena:fullscreen .leaderboard li.gold{grid-template-columns:24px 40px minmax(0,1fr) auto;padding:10px 12px 10px 8px}
-  .arena:fullscreen .leaderboard li.gold .avatar{width:40px;height:40px}
-  .arena:fullscreen .side{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);grid-template-rows:auto minmax(0,1fr)}
-  .arena:fullscreen .leaderboard{grid-row:1/3}
-  .arena:fullscreen .live-activity{min-height:0}
-  .arena:fullscreen .question h3{font-size:clamp(30px,8vw,72px)}
-  .arena:fullscreen .letters{--max:min(64px,6vh)}
+  .arena.full .how-to{width:100%;margin:0}
+  .arena.full .play-grid{grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,1.5fr) minmax(0,1fr)}
+  .arena.full .lb-head h3,.arena.full .lb-head span{white-space:nowrap}
+  .arena.full .leaderboard{padding:12px}
+  .arena.full .leaderboard li.gold{grid-template-columns:24px 40px minmax(0,1fr) auto;padding:10px 12px 10px 8px}
+  .arena.full .leaderboard li.gold .avatar{width:40px;height:40px}
+  .arena.full .side{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);grid-template-rows:auto minmax(0,1fr)}
+  .arena.full .leaderboard{grid-row:1/3}
+  .arena.full .live-activity{min-height:0}
+  .arena.full .question h3{font-size:clamp(30px,8vw,72px)}
+  .arena.full .letters{--max:min(64px,6vh)}
 }
 @media (max-width:1000px){
-  .arena:not(:fullscreen) .play-grid{grid-template-columns:minmax(0,1fr)}
-  .arena:not(:fullscreen) .leaderboard ol{max-height:380px}
+  .arena:not(.full) .play-grid{grid-template-columns:minmax(0,1fr)}
+  .arena:not(.full) .leaderboard ol{max-height:380px}
   .question{min-height:520px}
   .how-to{width:100%;margin:0}
 }
@@ -562,5 +604,104 @@ button:disabled{opacity:.45;cursor:not-allowed}
   .result-list li{grid-template-columns:18px 30px minmax(0,1fr) auto auto;gap:6px}
   .result-list .avatar{width:30px;height:30px}
 }
+/* Phone: compact stage, secondary text dropped. */
+@media (max-width:600px){
+  .wide-only,.q-meta,.how-to,.lb-head span,.player-name small:not(.rank-change),.conn,.prompt-label,.lobby-kicker,.lobby-note,.podium-ghost{display:none}
+  .arena{gap:10px;padding:10px;border-radius:14px}
+  .arena.full{padding:10px}
+  .arena.pinned{padding-top:max(10px,env(safe-area-inset-top));padding-bottom:max(10px,env(safe-area-inset-bottom))}
+  .stage-top{flex-wrap:nowrap;gap:8px}
+  .show-title{gap:8px}.show-title strong{font-size:17px;letter-spacing:-.3px}
+  .live-tag{padding:3px 7px;font-size:10px}
+  .fs-btn{margin-left:auto;padding:6px 10px;font-size:11px}
+  .play-grid{gap:10px}
+  .question{min-height:0;padding:12px 12px 0;border-width:2px;border-radius:16px;box-shadow:0 5px 0 #000}
+  .q-top{flex-wrap:nowrap;gap:8px}
+  .level{width:44px;height:44px;border-radius:10px}.level span{font-size:8px}.level strong{font-size:18px}
+  .point-ladder{order:0;flex-basis:auto;gap:4px}
+  .point-ladder li{padding:4px 2px;border-radius:9px}
+  .point-ladder strong{font-size:15px}.point-ladder small{font-size:9px}
+  .point-ladder .now{box-shadow:0 3px 0 #000}
+  .timer{width:52px;height:52px;margin-left:0}.timer strong{font-size:20px}.timer circle{stroke-width:10}
+  .question-text-slot{padding:12px 0 10px}
+  .question h3{margin:0;font-size:clamp(26px,8vw,38px);letter-spacing:-1px}
+  .letters{--max:44px;gap:8px 14px;padding:2px 0 8px}
+  .letter-word{gap:4px}
+  .letter-tile{border-radius:7px;border-bottom-width:4px}
+  .answer-choices{gap:8px;grid-auto-rows:minmax(52px,auto);padding:2px 2px 8px}
+  .answer-choice{gap:8px;padding:8px 10px 8px 8px;border-width:2px;border-radius:12px;box-shadow:0 4px 0 #000}
+  .choice-key{width:32px;height:32px;border-radius:8px;font-size:18px}
+  .choice-text{font-size:clamp(14px,4.2vw,18px);letter-spacing:-.2px}
+  .choice-check{top:-12px;right:-8px;width:30px;height:30px}.choice-check svg{width:16px}
+  .q-foot{justify-content:center;padding:4px 0 8px;font-size:12px}
+  .comment-cta{margin:auto -12px 0;padding:9px 10px;font-size:14px}
+  .lobby{gap:10px;padding:18px 0}
+  .lobby h3{font-size:clamp(34px,11vw,48px);letter-spacing:-1.5px}
+  .lobby-demo{gap:8px;margin-top:4px;padding:10px 12px}
+  .demo-vi{font-size:16px}.demo-arrow{font-size:20px}
+  .demo-tiles i{width:26px;height:32px;font-size:16px}
+  .demo-keys i{width:30px;height:30px;font-size:16px}
+  .side{gap:8px}
+  .leaderboard{padding:10px;border-radius:14px}
+  .lb-head h3{font-size:15px}
+  .leaderboard ol{gap:4px;margin-top:8px}
+  .leaderboard li,.leaderboard li.gold{grid-template-columns:18px 28px minmax(0,1fr) auto;gap:7px;padding:5px 8px 5px 5px;border-radius:10px}
+  .leaderboard li.podium{border-width:2px;box-shadow:0 3px 0 #000}
+  .avatar,.leaderboard li.gold .avatar{width:28px;height:28px;font-size:12px}
+  .crown{top:-10px;width:16px}
+  .rank{font-size:12px}
+  .player-name strong{font-size:13px}
+  .leaderboard li>b,.leaderboard li.gold>b{font-size:15px}
+  .score-award{top:-8px;padding:1px 6px;font-size:12px}
+  .waiting{padding:8px}.waiting h4{font-size:15px}.waiting p{font-size:12px}
+  .gift-strip{min-height:32px;border-radius:10px}.gift-strip p{padding:7px 10px;font-size:12px}
+  .live-activity{flex-basis:150px;padding:8px 8px 4px;border-radius:14px}
+  .activity-heading{margin:0 2px 6px;font-size:12px}
+  .chat-row{gap:6px;margin-bottom:4px;padding:4px 8px 4px 4px;border-radius:10px;font-size:12px}
+  .chat-avatar{width:20px;height:20px;font-size:10px}
+  .chat-text{padding-top:2px}
+  .arena:not(.full) .leaderboard ol{max-height:260px}
+  .results-overlay{padding:24px 10px 10px}
+  .round-results{padding:26px 14px 14px;border-width:2px;border-radius:18px;box-shadow:0 6px 0 #000}
+  .stamp{top:-18px;padding:6px 16px;font-size:17px}
+  .result-label{font-size:12px}
+  .result-answer{font-size:clamp(28px,9vw,40px)}
+  .result-meaning{margin-bottom:10px;font-size:14px}
+  .result-list{gap:4px}
+  .result-list li{grid-template-columns:16px 26px minmax(0,1fr) auto auto;gap:6px;padding:5px 8px 5px 5px}
+  .result-list .avatar{width:26px;height:26px;font-size:11px}
+  .result-list strong{font-size:13px}
+  .fastest{padding:1px 6px;font-size:9px}
+  .result-list time{font-size:11px}.result-list b{font-size:14px}.result-list li.first b{font-size:16px}
+  .no-winner{padding:12px}.no-winner strong{font-size:18px}
+  .result-timer{height:6px;margin-top:10px}
+  .result-footer{font-size:12px}
+  /* Fullscreen on a phone: question on top, leaderboard and comments side by side below. */
+  .arena:not(.full){margin:0 -22px;border-radius:0}
+  .show-title{min-width:0}.show-title strong{overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+  .fs-btn{flex-shrink:0;white-space:nowrap}
+  .choice-text{overflow-wrap:break-word;hyphens:auto}
+  .comment-cta{white-space:nowrap;font-size:clamp(12px,3.7vw,14px)}
+  .arena:not(.full) .point-ladder small,.arena:not(.full) .cta-tail{display:none}
+  .arena:not(.full) .answer-choice{gap:6px;padding:8px 8px 8px 6px}
+  .arena:not(.full) .choice-key{width:28px;height:28px;font-size:16px}
+  .arena:not(.full) .choice-text{font-size:clamp(13px,3.8vw,16px)}
+  .arena:not(.full) .question-text-slot,.arena:not(.full) .answer-slot,.arena:not(.full) .answer-choices{flex:0 0 auto}
+  .arena.full .play-grid{grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,1.3fr) minmax(0,1fr)}
+  .arena.full .side{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr);grid-template-rows:auto minmax(0,1fr)}
+  .arena.full .leaderboard li,.arena.full .leaderboard li.gold{grid-template-columns:16px 26px minmax(0,1fr) auto;gap:6px}
+  .arena.full .leaderboard li.gold .avatar,.arena.full .avatar{width:26px;height:26px}
+  .arena.full .gift-strip{grid-column:1/-1;grid-row:1}
+  .arena.full .leaderboard{grid-row:2;padding:10px}
+  .arena.full .live-activity{grid-row:2;min-height:0}
+  .arena.full .leaderboard li.gold{padding:5px 8px 5px 5px}
+  .arena.full .question h3{font-size:clamp(30px,10vw,48px)}
+  .arena.full .letters{--max:min(50px,6.5vh)}
+  .arena.full .answer-choices{grid-auto-rows:minmax(min(64px,8vh),auto)}
+  .arena.full .choice-text{font-size:clamp(15px,4.6vw,20px)}
+  .arena.full .choice-key{width:34px;height:34px;font-size:19px}
+  .arena.full .fs-btn{top:max(6px,env(safe-area-inset-top));right:6px;padding:4px 8px;font-size:10px}
+}
+@media (hover:none){.arena.full .fs-btn{opacity:.4}}
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
 </style>

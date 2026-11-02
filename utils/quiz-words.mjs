@@ -6,5 +6,5 @@ export const SOURCES = [{
   name:'3000 từ vựng tiếng Anh thông dụng theo chủ đề · PDF nguồn',
   url:'/quiz-vocabulary.pdf'
 }];
-export const VOCABULARY = {sourceRows:1760,uniqueWords:vocabulary.length,levelSource:'estimated'};
-export const WORDS = vocabulary;
+export const WORDS = vocabulary.filter(word=>/^[a-z]+$/i.test(word.answer));
+export const VOCABULARY = {sourceRows:1760,uniqueWords:WORDS.length,levelSource:'estimated'};
