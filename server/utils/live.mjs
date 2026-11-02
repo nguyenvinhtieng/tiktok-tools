@@ -6,5 +6,8 @@ export function parseLiveUrl(value) {
   return match[1];
 }
 export function serializeLiveEvent(type, data) {
+  if (type === 'chat' && typeof data?.content === 'string' && !data.comment) {
+    data = { ...data, comment: data.content };
+  }
   return JSON.stringify({ type, receivedAt: new Date().toISOString(), data }, (_key, value) => typeof value === 'bigint' ? value.toString() : value);
 }

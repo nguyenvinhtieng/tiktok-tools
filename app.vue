@@ -118,7 +118,7 @@ async function toggleReplies(comment, more = false) {
   } catch (e) { if (version === generation) thread.error = e.message || 'Không tải được trả lời. Vui lòng thử lại.'; }
   finally { thread.busy = false; }
 }
-const title = computed(() => isLive.value ? (tool.value === 'live-1' ? 'Live Inspector' : `Live / Test ${tool.value.slice(-1)}`) : tool.value === 'download' ? 'Download video' : 'Fetch comments');
+const title = computed(() => isLive.value ? (tool.value === 'live-1' ? 'Live Inspector' : tool.value === 'live-2' ? 'English Quiz' : `Live / Test ${tool.value.slice(-1)}`) : tool.value === 'download' ? 'Download video' : 'Fetch comments');
 watch(tool, () => { stopBulk(); generation++; error.value = ''; liveOpen.value = false; });
 watch(url, () => { stopBulk(); generation++; bulk.status = ''; bulk.pages = 0; Object.assign(commentPage, { items: [], cursor: 0, hasMore: true, loaded: false, seenCursors: new Set() }); Object.keys(threads).forEach(key => delete threads[key]); sourceUrl.value = '';  video.value = null; comments.value = []; searched.value = false; hasMore.value = false; });
 async function submit(more = false) {
@@ -160,7 +160,7 @@ const number = value => Intl.NumberFormat('en', { notation: 'compact' }).format(
         <NuxtLink to="/?tool=download" :class="{ active: tool === 'download' }">Download video</NuxtLink>
         <div class="dropdown" @keydown.esc="liveOpen = false">
           <button :class="{ active: isLive }" :aria-expanded="liveOpen" @click="liveOpen = !liveOpen">Live <span class="tiny-dot"/> <span class="chevron">⌄</span></button>
-          <div v-if="liveOpen" class="menu"><NuxtLink v-for="i in 3" :key="i" :to="`/?tool=live-${i}`" @click="liveOpen = false">{{ i === 1 ? 'Live Inspector' : `Test ${i}` }} <span>↗</span></NuxtLink></div>
+          <div v-if="liveOpen" class="menu"><NuxtLink v-for="i in 3" :key="i" :to="`/?tool=live-${i}`" @click="liveOpen = false">{{ i === 1 ? 'Live Inspector' : i === 2 ? 'English Quiz' : `Test ${i}` }} <span>↗</span></NuxtLink></div>
         </div>
       </nav>
     </header>
@@ -174,7 +174,7 @@ const number = value => Intl.NumberFormat('en', { notation: 'compact' }).format(
           <NuxtLink class="tool-link" :class="{ selected: tool === 'comments' }" to="/?tool=comments"><span class="icon">☷</span><span>Fetch comments<small>Lấy & xuất bình luận</small></span><b>↗</b></NuxtLink>
           <NuxtLink class="tool-link" :class="{ selected: tool === 'download' }" to="/?tool=download"><span class="icon">↓</span><span>Download video<small>Tải video MP4</small></span><b>↗</b></NuxtLink>
           <div class="aside-label live-label">LIVE <span class="lab-badge">THỬ NGHIỆM</span></div>
-          <NuxtLink v-for="i in 3" :key="i" :to="`/?tool=live-${i}`" class="lab-link" :class="{ selected: tool === `live-${i}` }"><span>0{{ i }}</span> {{ i === 1 ? 'Live Inspector' : `Test ${i}` }} <b>↗</b></NuxtLink>
+          <NuxtLink v-for="i in 3" :key="i" :to="`/?tool=live-${i}`" class="lab-link" :class="{ selected: tool === `live-${i}` }"><span>0{{ i }}</span> {{ i === 1 ? 'Live Inspector' : i === 2 ? 'English Quiz' : `Test ${i}` }} <b>↗</b></NuxtLink>
         </aside>
 
         <section class="panel" :aria-label="title">
@@ -231,6 +231,7 @@ const number = value => Intl.NumberFormat('en', { notation: 'compact' }).format(
             <div v-else class="empty-state"><h3>{{ tool === 'download' ? 'Chưa có video' : 'Chưa có bình luận' }}</h3></div>
           </template>
           <LiveInspector v-else-if="tool === 'live-1'" />
+          <EnglishQuiz v-else-if="tool === 'live-2'" />
           <div v-else class="empty-state live-empty"><span class="live-symbol">◉</span><h3>Live test {{ tool.slice(-1) }}</h3><p>Công cụ này đang chờ được phát triển.</p></div>
         </section>
       </div>
