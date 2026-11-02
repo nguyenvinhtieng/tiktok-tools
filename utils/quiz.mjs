@@ -77,15 +77,21 @@ export function settleRound(game) {
   round.settled=true;
   return results;
 }
-export function acceptGift(game,data,multiplier=1) {
+// Connector gift metadata uses diamondCount for the gift cost; keep it as a
+// compatibility field while exposing the value as coins throughout the game.
+export function giftCoins(data) {
+  return Number(data.coinCount ?? data.gift?.coinCount ?? data.giftDetails?.coinCount ??
+    data.diamondCount ?? data.gift?.diamondCount ?? data.giftDetails?.diamondCount ?? 0);
+}
+export function acceptGift(game,data,multiplier=10) {
   const user=identity(data), details=data.giftDetails || data.gift || {};
-  const diamonds=Number(data.diamondCount ?? details.diamondCount ?? 0), count=Number(data.repeatCount ?? 1);
-  if (!user.id || !Number.isSafeInteger(diamonds) || diamonds<=0 || !Number.isSafeInteger(count) || count<=0 || !Number.isSafeInteger(multiplier) || multiplier<=0) return 0;
+  const coins=giftCoins(data), count=Number(data.repeatCount ?? 1);
+  if (!user.id || !Number.isSafeInteger(coins) || coins<=0 || !Number.isSafeInteger(count) || count<=0 || !Number.isSafeInteger(multiplier) || multiplier<=0) return 0;
   const group=data.groupId && String(data.groupId)!=='0' ? String(data.groupId) : '';
   // Without a stable event/streak identifier, do not guess and double-credit gifts.
   const key=group ? `${user.id}:${data.giftId || details.id}:${group}` : (data.msgId || data.common?.msgId) ? `${user.id}:msg:${data.msgId || data.common.msgId}` : '';
   if (!key) return 0;
-  const total=diamonds*count*multiplier;
+  const total=coins*count*multiplier;
   if(!Number.isSafeInteger(total)) return 0;
   const points=Math.max(0,total-(game.gifts[key] || 0)); game.gifts[key]=Math.max(total,game.gifts[key] || 0);
   if (!points) return 0;

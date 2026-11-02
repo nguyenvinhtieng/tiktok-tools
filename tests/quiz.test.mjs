@@ -9,13 +9,13 @@ test('deferred answers keep scores unchanged until results finish and settle onc
   assert.equal(acceptChat(game,{userId:'a',nickname:'An',comment:'apple'},2000,true),20);
   assert.equal(acceptChat(game,{userId:'b',nickname:'Bình',comment:'apple'},10000,true),10);
   assert.equal(acceptChat(game,{userId:'a',comment:'apple'},11000,true),0);
-  assert.equal(game.players.a.score,2);
+  assert.equal(game.players.a.score,20);
   assert.equal(game.players.b,undefined);
   assert.deepEqual(game.round.results.map(r=>[r.id,r.elapsed,r.points]),[['a',1000,20],['b',9000,10]]);
   assert.deepEqual(settleRound(game),[]);
   game.round.revealed=true;
   assert.equal(settleRound(game).length,2);
-  assert.equal(game.players.a.score,22);
+  assert.equal(game.players.a.score,40);
   assert.equal(game.players.b.score,10);
   assert.equal(game.players.a.correct,1);
   assert.deepEqual(settleRound(game),[]);
@@ -164,11 +164,32 @@ test('gift streaks award only cumulative increments and deduplicate replay', () 
   assert.equal(game.players['1'].giftScore,30);
   assert.equal(acceptGift(game,{...gift,groupId:'next',msgId:'d'},5),10);
 });
+test('gift coin values award ten points per coin by default', () => {
+  const game=createGame();
+  assert.equal(acceptGift(game,{userId:'a',msgId:'rose',gift:{name:'Rose',coinCount:1}}),10);
+  assert.equal(acceptGift(game,{userId:'a',msgId:'coins',coinCount:3,repeatCount:2}),60);
+  assert.equal(acceptGift(game,{userId:'a',msgId:'details',giftDetails:{coinCount:2}}),20);
+  assert.equal(acceptGift(game,{userId:'a',msgId:'legacy',gift:{diamondCount:1}}),10);
+  assert.equal(game.players.a.score,100);
+  assert.equal(game.players.a.giftScore,100);
+});
+test('coin gift streaks credit only new gifts and reject unknown or invalid values', () => {
+  const game=createGame();
+  const gift={userId:'a',giftId:'rose',groupId:'streak',gift:{name:'Rose',coinCount:1},repeatCount:1};
+  assert.equal(acceptGift(game,gift),10);
+  assert.equal(acceptGift(game,{...gift,repeatCount:3}),20);
+  assert.equal(acceptGift(game,{...gift,repeatCount:3,repeatEnd:true}),0);
+  assert.equal(acceptGift(game,gift),0);
+  for(const coinCount of [0,-1,1.5,Infinity])
+    assert.equal(acceptGift(game,{userId:'a',msgId:`invalid-${coinCount}`,coinCount}),0);
+  assert.equal(acceptGift(game,{userId:'a',msgId:'unknown',gift:{name:'Unknown'}}),0);
+  assert.equal(game.players.a.giftScore,30);
+});
 test('malformed or unidentifiable gifts and comments cannot score', () => {
   const game=createGame();
   for(const gift of [{}, {userId:'a',diamondCount:-2}, {userId:'a',diamondCount:2,repeatCount:Infinity}, {userId:'a',diamondCount:2}]) assert.equal(acceptGift(game,gift),0);
   assert.equal(acceptChat(game,{comment:'apple'}),0);
-  assert.equal(acceptGift(game,{userId:'a',msgId:'x',diamondCount:3}),3);
+  assert.equal(acceptGift(game,{userId:'a',msgId:'x',diamondCount:3}),30);
 });
 test('native v3 gift uses nested gift and common message ID', () => {
   const game=createGame(); const data={user:{id:'native',nickname:'Native'},common:{msgId:'v3'},gift:{id:'gift',diamondCount:7,type:0,name:'Gift'},repeatCount:1};
@@ -225,7 +246,7 @@ test('avatars from chat and native gifts persist and refresh without losing scor
   acceptGift(game,{user:{id:'a',nickname:'An mới',avatarThumb:{urlList:['https://example.com/b.jpg']}},gift:{diamondCount:2},common:{msgId:'g'}});
   assert.equal(game.players.a.avatar,'https://example.com/b.jpg');
   assert.equal(game.players.a.name,'An mới');
-  assert.equal(game.players.a.score,12);
+  assert.equal(game.players.a.score,30);
   acceptGift(game,{userId:'a',msgId:'g2',diamondCount:1,profilePictureUrl:'javascript:alert(1)'});
   assert.equal(game.players.a.avatar,'https://example.com/b.jpg');
   const storage={setItem(k,v){this.value=v;},getItem(){return this.value;}};
@@ -272,7 +293,7 @@ test('starting defaults to fresh scores and only restores when explicitly checke
   assert.equal(Object.keys(JSON.parse(storage.value).players).length,0);
   storage.value=JSON.stringify(old);
   const resumed=runInNewContext(script+`; loadPrevious.value=true; startQuiz(); game.value;`,{...context});
-  assert.equal(resumed.players.old.score,900);
+  assert.equal(resumed.players.old.score,9000);
   assert.equal(resumed.round.revealed,false);
   const unavailable=runInNewContext(script+`; loadPrevious.value=true; startQuiz(); game.value;`,{...context,window:{get localStorage(){throw Error('blocked');}}});
   assert.equal(Object.keys(unavailable.players).length,0);

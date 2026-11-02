@@ -1,9 +1,9 @@
 <script setup>
 import { parseLiveUrl } from '../server/utils/live.mjs';
 import { WORDS, SOURCES, VOCABULARY } from '../utils/quiz-words.mjs';
-import { POINTS, createGame, startRound, roundHint, drawWord, acceptChat, settleRound, acceptGift, saveGame, restoreGame } from '../utils/quiz.mjs';
+import { POINTS, createGame, startRound, roundHint, drawWord, acceptChat, settleRound, acceptGift, giftCoins, saveGame, restoreGame } from '../utils/quiz.mjs';
 const url=ref(''), status=ref('Chưa kết nối'), error=ref(''), active=ref(false), connected=ref(false);
-const game=ref(createGame()), band=ref('mixed'), seconds=ref(30), giftRate=ref(1), auto=ref(true), running=ref(false);
+const game=ref(createGame()), band=ref('mixed'), seconds=ref(30), giftRate=ref(10), auto=ref(true), running=ref(false);
 const now=ref(Date.now()), screen=ref(null), fullscreen=ref(false), feed=ref([]);
 const answerPreview=ref(false), rankChanges=ref({}), failedAvatars=ref({});
 const activity=ref([]), interactionActivity=ref([]), participantActivity=ref(null);
@@ -119,7 +119,7 @@ function connect() {
       if(event.type==='gift' && sessionStarted) {
         const points=acceptGift(game.value,data,giftRate.value);
         if(points) notice(`${(data.user || data).nickname || 'Người chơi'} tặng ${data.gift?.name || data.giftDetails?.giftName || data.giftName || 'quà'} +${points}`);
-        else if(!Number(data.diamondCount ?? data.gift?.diamondCount ?? data.giftDetails?.diamondCount)) notice('Quà thiếu giá trị diamond — chưa cộng điểm.');
+        else if(!Number.isSafeInteger(giftCoins(data)) || giftCoins(data)<=0) notice('Quà thiếu giá trị xu — chưa cộng điểm.');
       }
       if(['disconnected','streamEnd','connectionError'].includes(event.type)) { disconnect(); if(event.type==='connectionError') error.value=data.message || 'Không kết nối được LIVE.'; }
     } catch { error.value='Không đọc được sự kiện LIVE.'; }
@@ -163,7 +163,7 @@ onBeforeUnmount(()=>{ disconnect(); finishResults(); clearInterval(timer); clear
         <div class="settings">
           <label>Band <select v-model="band"><option value="mixed">Ngẫu nhiên · ưu tiên A2–C1</option><option v-for="b in Object.keys(POINTS)" :key="b" :value="b" :disabled="!bandCounts[b]">{{ b }} · {{ bandCounts[b] }} từ</option></select></label>
           <label>Thời gian <select v-model.number="seconds"><option :value="15">15 giây</option><option :value="30">30 giây</option><option :value="45">45 giây</option><option :value="60">60 giây</option></select></label>
-          <label>Điểm / diamond <select v-model.number="giftRate" :disabled="active"><option v-for="n in [1,5,10]" :key="n" :value="n">{{ n }}</option></select></label>
+          <label>Điểm / xu quà <select v-model.number="giftRate" :disabled="active"><option v-for="n in [1,5,10]" :key="n" :value="n">{{ n }}</option></select></label>
         </div>
         <label class="check"><input v-model="auto" type="checkbox"> Tự chuyển câu sau khi cộng điểm</label>
         <label class="check"><input v-model="loadPrevious" type="checkbox" :disabled="running"> Dùng lại dữ liệu phiên trước</label>
@@ -254,7 +254,7 @@ onBeforeUnmount(()=>{ disconnect(); finishResults(); clearInterval(timer); clear
           </aside>
           <div class="gift-strip" aria-live="polite">
             <TransitionGroup v-if="feed.length" name="feed" tag="div" class="ticker"><p v-for="item in feed.slice(0,1)" :key="item.id"><span class="gift-icon" aria-hidden="true"/>{{ item.text }}</p></TransitionGroup>
-            <p v-else class="gift-tip"><span class="gift-icon" aria-hidden="true"/>Tặng quà để cộng điểm · 1 diamond = {{ giftRate }} điểm</p>
+            <p v-else class="gift-tip"><span class="gift-icon" aria-hidden="true"/>Tặng quà để cộng điểm · 1 xu quà = {{ giftRate }} điểm</p>
           </div>
           <section class="live-activity">
             <div class="activity-heading"><span>Bình luận</span><span class="conn" :class="{online:connected}">{{ connected ? 'Đang kết nối' : 'Chưa kết nối' }}</span></div>
@@ -296,7 +296,7 @@ onBeforeUnmount(()=>{ disconnect(); finishResults(); clearInterval(timer); clear
       </Transition>
     </section>
 
-    <details class="sources"><summary>Luật chơi & nguồn từ vựng · {{ WORDS.length }} từ</summary><p>Mỗi người được điểm một lần mỗi câu, tất cả đáp án đúng trong thời gian đều được tính. Bình luận chỉ cần chứa đáp án hoặc cách viết thay thế, không phân biệt hoa/thường và dấu. Hết giờ hiện đáp án và danh sách trả lời đúng theo thời gian trong 5 giây, sau đó cộng điểm và cập nhật bảng xếp hạng trước khi chuyển câu. Điểm và tiến trình được lưu tự động trên trình duyệt này. Mặc định bắt đầu với điểm và bộ từ mới. Tick “Dùng lại dữ liệu phiên trước” trước khi bắt đầu để khôi phục điểm và tiến trình đã lưu. Phiên mới sẽ xóa điểm đã lưu.</p><p>Quà = diamond × số lượng × hệ số. Chuỗi quà chỉ cộng phần tăng thêm. Quà thiếu giá trị hoặc mã nhận diện sẽ không được cộng.</p><p>Từ và nghĩa Việt lấy từ PDF được cung cấp: {{ VOCABULARY.sourceRows }} mục, gộp còn {{ WORDS.length }} từ/cụm từ duy nhất. Level A1–C2 do Quiz ước lượng, không phải chứng nhận CEFR của Oxford. Rút ngẫu nhiên không hoàn lại, ưu tiên A2–C1 khi còn từ. Khi rút hết toàn bộ, tự nạp lại bộ từ cho lượt mới. Đổi band hoặc kết nối lại không xóa lịch sử rút; Phiên mới sẽ reset toàn bộ.</p><a v-for="s in SOURCES" :key="s.url" :href="s.url" target="_blank" rel="noopener noreferrer">{{ s.name }} ↗</a></details>
+    <details class="sources"><summary>Luật chơi & nguồn từ vựng · {{ WORDS.length }} từ</summary><p>Mỗi người được điểm một lần mỗi câu, tất cả đáp án đúng trong thời gian đều được tính. Bình luận chỉ cần chứa đáp án hoặc cách viết thay thế, không phân biệt hoa/thường và dấu. Hết giờ hiện đáp án và danh sách trả lời đúng theo thời gian trong 5 giây, sau đó cộng điểm và cập nhật bảng xếp hạng trước khi chuyển câu. Điểm và tiến trình được lưu tự động trên trình duyệt này. Mặc định bắt đầu với điểm và bộ từ mới. Tick “Dùng lại dữ liệu phiên trước” trước khi bắt đầu để khôi phục điểm và tiến trình đã lưu. Phiên mới sẽ xóa điểm đã lưu.</p><p>Quà = giá trị xu của quà × số lượng × điểm/xu. Mặc định 1 xu = 10 điểm, bằng điểm gốc một câu A1 đúng. Chuỗi quà chỉ cộng phần tăng thêm. Quà thiếu giá trị xu hoặc mã nhận diện sẽ không được cộng.</p><p>Từ và nghĩa Việt lấy từ PDF được cung cấp: {{ VOCABULARY.sourceRows }} mục, gộp còn {{ WORDS.length }} từ/cụm từ duy nhất. Level A1–C2 do Quiz ước lượng, không phải chứng nhận CEFR của Oxford. Rút ngẫu nhiên không hoàn lại, ưu tiên A2–C1 khi còn từ. Khi rút hết toàn bộ, tự nạp lại bộ từ cho lượt mới. Đổi band hoặc kết nối lại không xóa lịch sử rút; Phiên mới sẽ reset toàn bộ.</p><a v-for="s in SOURCES" :key="s.url" :href="s.url" target="_blank" rel="noopener noreferrer">{{ s.name }} ↗</a></details>
   </div>
 </template>
 
