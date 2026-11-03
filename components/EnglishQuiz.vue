@@ -28,7 +28,7 @@ async function toggleSpeech() {
   try {
     if(!speech) {
       const {createQuizSpeech}=await import('../utils/quiz-speech.mjs');
-      speech=createQuizSpeech({onState:busy=>{speechBusy.value=busy;},onError:message=>{speechError.value=message;}});
+      speech=createQuizSpeech({onState:busy=>{speechBusy.value=busy; audio?.setSpeechActive(busy);},onError:message=>{speechError.value=message;}});
     }
     updateSpeechVolume(); await speech.start(); speechEnabled.value=true;
     readRound(); prepareSpeech();
@@ -42,7 +42,8 @@ async function toggleAudio() {
   soundBusy.value=true; soundError.value='';
   try {
     if(!audio) { const {createQuizAudio}=await import('../utils/quiz-audio.mjs'); audio=createQuizAudio(); }
-    updateAudioLevels(); await audio.start(); soundEnabled.value=true;
+    updateAudioLevels(); audio.setSpeechActive(speechBusy.value); audio.setPhase(audioPhase.value); audio.setTension(1-timeRatio.value);
+    await audio.start(); soundEnabled.value=true;
   } catch(e) { soundError.value=e.message || 'Không bật được âm thanh. Hãy thử lại.'; }
   finally { soundBusy.value=false; }
 }
@@ -91,8 +92,15 @@ const hint=computed(()=>round.value ? roundHint(round.value,questionReadAt.value
 const roundResults=computed(()=>[...(round.value?.results || [])].sort((a,b)=>a.time-b.time));
 const correctIndex=computed(()=>round.value?.choices?.findIndex(choice=>choice.answer===round.value.word.answer) ?? -1);
 watch(remaining,(value,previous)=>{
-  if(running.value && !round.value?.revealed && value>0 && value<=3 && value!==previous) audio?.cue('tick');
+  if(running.value && !round.value?.revealed && !questionReadAt.value && value>0 && value<=5 && value!==previous) audio?.cue('tick',value);
 });
+const audioPhase=computed(()=>{
+  if(!round.value) return 'lobby';
+  if(!round.value.revealed) return questionReadAt.value ? 'reading' : 'countdown';
+  return resultsOpen.value ? 'results' : 'break';
+});
+watch(audioPhase,phase=>audio?.setPhase(phase));
+watch(timeRatio,ratio=>audio?.setTension(1-ratio));
 const RING=2*Math.PI*44;
 const CONFETTI=Array.from({length:36},(_,i)=>({id:i,style:{left:`${(i*53)%100}%`,animationDelay:`${(i*137%900)/1000}s`,animationDuration:`${2.4+(i%5)*.4}s`,background:['#ffd60a','#fe2c55','#25f4ee','#2bd576','#ffffff'][i%5],'--r':`${i*47%360}deg`}}));
 const hintWords=computed(()=>{
@@ -158,7 +166,7 @@ function next() {
 }
 function reveal(readAnswer=true) {
   if(!round.value || round.value.revealed) return;
-  round.value.revealed=true; resultsOpen.value=true; audio?.cue('reveal');
+  round.value.revealed=true; resultsOpen.value=true; audio?.cue('reveal',round.value.answered.length>0);
   awardAt=Date.now()+5000; nextAt=0;
   if(readAnswer) readRound();
 }
@@ -183,6 +191,7 @@ function connect() {
     try {
       const event=JSON.parse(message.data), data=event.data || {};
       const points=event.type==='chat' && running.value && !questionReadAt.value ? acceptChat(game.value,data,Date.now(),true) : 0;
+      if(points>0) audio?.cue('correct');
       recordActivity(event.type,data,points);
       if(event.type==='connected') { connected.value=true; status.value='Đang nhận comment & quà'; }
       if(event.type==='gift' && sessionStarted) {
@@ -249,7 +258,7 @@ onBeforeUnmount(()=>{ audio?.dispose(); disconnect(); speech?.dispose(); finishR
           <label>Nhạc nền · {{ musicVolume }}% <input v-model.number="musicVolume" type="range" min="0" max="100" aria-label="Âm lượng nhạc nền" @input="updateAudioLevels"></label>
           <label>Hiệu ứng · {{ effectsVolume }}% <input v-model.number="effectsVolume" type="range" min="0" max="100" aria-label="Âm lượng hiệu ứng" @input="updateAudioLevels"></label>
         </div>
-        <p class="conn-status">Nhạc quiz nhẹ · phát liên tục cả lúc chờ và nghỉ giữa câu. Bấm bật một lần trước khi live.</p>
+        <p class="conn-status">Nhạc game show · hồi hộp và dồn dập dần khi đếm giờ, tự hạ nhỏ khi đang đọc. Bấm bật một lần trước khi live.</p>
         <p v-if="soundError" role="alert" class="error">{{ soundError }}</p>
         <div class="controls"><button type="button" class="secondary" :aria-pressed="speechEnabled" @click="toggleSpeech">{{ speechEnabled ? 'Tắt giọng đọc' : 'Bật giọng đọc' }}</button><button type="button" class="secondary" :disabled="!speechEnabled || !round || speechBusy" @click="readRound">Nghe lại {{ round?.revealed ? 'đáp án' : 'câu hỏi' }}</button></div>
         <div class="settings"><label>Giọng đọc · {{ speechVolume }}% <input v-model.number="speechVolume" type="range" min="0" max="100" aria-label="Âm lượng giọng đọc" @input="updateSpeechVolume"></label></div>
