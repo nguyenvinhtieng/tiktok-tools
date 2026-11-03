@@ -1,5 +1,8 @@
 node_modules/
 .nuxt/
+.nuxt-build/
 .output/
 .env*
 .DS_Store
+.data/quiz-audio/
+.venv/

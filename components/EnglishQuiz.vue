@@ -2,6 +2,50 @@
 import { parseLiveUrl } from '../server/utils/live.mjs';
 import { WORDS, SOURCES, VOCABULARY } from '../utils/quiz-words.mjs';
 import { POINTS, createGame, startRound, roundHint, drawWord, acceptChat, settleRound, acceptGift, giftCoins, saveGame, restoreGame } from '../utils/quiz.mjs';
+const soundEnabled=ref(false), soundBusy=ref(false), soundError=ref(''), musicVolume=ref(25), effectsVolume=ref(35);
+let audio;
+const speechEnabled=ref(false), speechBusy=ref(false), speechError=ref(''), speechVolume=ref(100);
+const questionReadAt=ref(0);
+let speech, speechStarting=false, speechReadVersion=0, speechClockRound;
+function updateSpeechVolume() { speech?.setVolume(speechVolume.value/100); }
+function finishQuestionRead() {
+  if(questionReadAt.value && speechClockRound===round.value && !round.value.revealed) round.value.deadline+=Date.now()-questionReadAt.value;
+  questionReadAt.value=0; speechClockRound=undefined;
+}
+async function readRound() {
+  if(!speechEnabled.value || !speech || !round.value) return;
+  finishQuestionRead();
+  const version=++speechReadVersion;
+  if(!round.value.revealed) { questionReadAt.value=Date.now(); speechClockRound=round.value; }
+  speechError.value='';
+  try { return await speech.speak(round.value.word.answer,round.value.revealed); }
+  finally { if(version===speechReadVersion) finishQuestionRead(); }
+}
+async function toggleSpeech() {
+  if(speechStarting) return;
+  if(speechEnabled.value) { speechEnabled.value=false; speech?.stop(); return; }
+  speechStarting=true; speechError.value='';
+  try {
+    if(!speech) {
+      const {createQuizSpeech}=await import('../utils/quiz-speech.mjs');
+      speech=createQuizSpeech({onState:busy=>{speechBusy.value=busy;},onError:message=>{speechError.value=message;}});
+    }
+    updateSpeechVolume(); await speech.start(); speechEnabled.value=true;
+    readRound(); prepareSpeech();
+  } catch(e) { speechError.value=e.message || 'Không bật được giọng đọc.'; }
+  finally { speechStarting=false; }
+}
+function updateAudioLevels() { audio?.setLevels(musicVolume.value/100,effectsVolume.value/100); }
+async function toggleAudio() {
+  if(soundBusy.value) return;
+  if(soundEnabled.value) { audio?.stop(); soundEnabled.value=false; return; }
+  soundBusy.value=true; soundError.value='';
+  try {
+    if(!audio) { const {createQuizAudio}=await import('../utils/quiz-audio.mjs'); audio=createQuizAudio(); }
+    updateAudioLevels(); await audio.start(); soundEnabled.value=true;
+  } catch(e) { soundError.value=e.message || 'Không bật được âm thanh. Hãy thử lại.'; }
+  finally { soundBusy.value=false; }
+}
 const url=ref(''), status=ref('Chưa kết nối'), error=ref(''), active=ref(false), connected=ref(false);
 const game=ref(createGame()), band=ref('mixed'), seconds=ref(30), giftRate=ref(10), auto=ref(true), running=ref(false);
 const mode=ref('text');
@@ -25,14 +69,30 @@ function persist() {
   error.value='Không lưu được tiến trình trên trình duyệt. Hãy kiểm tra quyền lưu trữ hoặc dung lượng trống.';
 }
 const round=computed(()=>game.value.round);
+let preparedNext;
+function prepareSpeech() {
+  if(!speechEnabled.value || !speech || !round.value) return;
+  speech.prefetch(round.value.word.answer,true);
+  const deckKey=JSON.stringify(game.value.deck);
+  if(!preparedNext || preparedNext.game!==game.value || preparedNext.band!==band.value || preparedNext.deckKey!==deckKey) {
+    const preview={deck:{...game.value.deck,remaining:game.value.deck.remaining?.slice() ?? null}};
+    const word=drawWord(preview,WORDS,band.value);
+    preparedNext={game:game.value,band:band.value,deckKey,word,deck:preview.deck};
+  }
+  if(preparedNext.word) speech.prefetch(preparedNext.word.answer,false);
+}
+watch(band,()=>{ preparedNext=undefined; prepareSpeech(); });
 const bandCounts=computed(()=>Object.fromEntries(Object.keys(POINTS).map(b=>[b, WORDS.filter(w=>w.band===b).length])));
-const remainingMs=computed(()=>round.value && !round.value.revealed ? Math.min(round.value.seconds*1000,Math.max(0,round.value.deadline-now.value)) : 0);
+const remainingMs=computed(()=>round.value && !round.value.revealed ? Math.min(round.value.seconds*1000,Math.max(0,round.value.deadline-(questionReadAt.value || now.value))) : 0);
 const remaining=computed(()=>Math.ceil(remainingMs.value/1000));
 const timeRatio=computed(()=>round.value ? remainingMs.value/(round.value.seconds*1000) : 0);
 const ranking=computed(()=>Object.values(game.value.players).sort((a,b)=>b.score-a.score || b.correct-a.correct || a.id.localeCompare(b.id)));
-const hint=computed(()=>round.value ? roundHint(round.value,now.value) : null);
+const hint=computed(()=>round.value ? roundHint(round.value,questionReadAt.value || now.value) : null);
 const roundResults=computed(()=>[...(round.value?.results || [])].sort((a,b)=>a.time-b.time));
 const correctIndex=computed(()=>round.value?.choices?.findIndex(choice=>choice.answer===round.value.word.answer) ?? -1);
+watch(remaining,(value,previous)=>{
+  if(running.value && !round.value?.revealed && value>0 && value<=3 && value!==previous) audio?.cue('tick');
+});
 const RING=2*Math.PI*44;
 const CONFETTI=Array.from({length:36},(_,i)=>({id:i,style:{left:`${(i*53)%100}%`,animationDelay:`${(i*137%900)/1000}s`,animationDuration:`${2.4+(i%5)*.4}s`,background:['#ffd60a','#fe2c55','#25f4ee','#2bd576','#ffffff'][i%5],'--r':`${i*47%360}deg`}}));
 const hintWords=computed(()=>{
@@ -78,7 +138,7 @@ function startQuiz() {
   if(loadPrevious.value) {
     try { initial=restoreGame(window.localStorage); } catch {}
   }
-  game.value=initial; feed.value=[]; answerPreview.value=false; failedAvatars.value={};
+  preparedNext=undefined; game.value=initial; feed.value=[]; answerPreview.value=false; failedAvatars.value={};
   sessionStarted=true;
   next();
   persist();
@@ -86,27 +146,33 @@ function startQuiz() {
 function next() {
   if(resultsOpen.value || awardsUntil>Date.now()) return;
   if(running.value && round.value && !round.value.revealed) { reveal(); return; }
-  const word=drawWord(game.value,WORDS,band.value);
+  const reserved=preparedNext;
+  preparedNext=undefined;
+  const useReserved=reserved && reserved.game===game.value && reserved.band===band.value && reserved.deckKey===JSON.stringify(game.value.deck);
+  const word=useReserved ? reserved.word : drawWord(game.value,WORDS,band.value);
+  if(useReserved && word) game.value.deck=reserved.deck;
   if(!word) { stop(); error.value='Band này đã hết từ trong lượt hiện tại. Chọn band khác hoặc Ngẫu nhiên để tiếp tục; bộ từ chỉ reset khi đã rút hết tất cả.'; return; }
   error.value=''; answerPreview.value=false; now.value=Date.now(); nextAt=0;
   startRound(game.value,word,now.value,seconds.value,Math.random,mode.value,WORDS);
-  running.value=true;
+  running.value=true; audio?.cue('question'); readRound(); prepareSpeech();
 }
-function reveal() {
+function reveal(readAnswer=true) {
   if(!round.value || round.value.revealed) return;
-  round.value.revealed=true; resultsOpen.value=true;
+  round.value.revealed=true; resultsOpen.value=true; audio?.cue('reveal');
   awardAt=Date.now()+5000; nextAt=0;
+  if(readAnswer) readRound();
 }
 function finishResults() {
   if(!resultsOpen.value) return;
   const results=settleRound(game.value);
+  if(results.length) audio?.cue('winner');
   scoreAwards.value=Object.fromEntries(results.map(item=>[item.id,item.points]));
   resultsOpen.value=false; awardAt=0; awardsUntil=Date.now()+1800;
   nextAt=awardsUntil;
   persist();
 }
-function stop() { reveal(); running.value=false; nextAt=0; }
-function disconnect() { source?.close(); source=undefined; active.value=false; connected.value=false; status.value='Đã ngắt kết nối'; stop(); }
+function stop(readAnswer=true) { reveal(readAnswer); running.value=false; nextAt=0; }
+function disconnect() { source?.close(); source=undefined; active.value=false; connected.value=false; status.value='Đã ngắt kết nối'; }
 function connect() {
   error.value='';
   try { parseLiveUrl(url.value); } catch(e) { error.value=e.message; return; }
@@ -116,7 +182,7 @@ function connect() {
     if(source!==current) return;
     try {
       const event=JSON.parse(message.data), data=event.data || {};
-      const points=event.type==='chat' && running.value ? acceptChat(game.value,data,Date.now(),true) : 0;
+      const points=event.type==='chat' && running.value && !questionReadAt.value ? acceptChat(game.value,data,Date.now(),true) : 0;
       recordActivity(event.type,data,points);
       if(event.type==='connected') { connected.value=true; status.value='Đang nhận comment & quà'; }
       if(event.type==='gift' && sessionStarted) {
@@ -138,20 +204,20 @@ async function toggleFullscreen() {
   } catch { pinned.value=true; }
 }
 function syncFullscreen() { fullscreen.value=document.fullscreenElement===screen.value; }
-function reset() { if(!window.confirm('Xóa toàn bộ điểm và bắt đầu phiên mới?')) return; disconnect(); resultsOpen.value=false; awardAt=0; awardsUntil=0; scoreAwards.value={}; sessionStarted=true; loadPrevious.value=false; game.value=createGame(); feed.value=[]; answerPreview.value=false; failedAvatars.value={}; }
+function reset() { if(!window.confirm('Xóa toàn bộ điểm và bắt đầu phiên mới?')) return; preparedNext=undefined; disconnect(); stop(false); speech?.stop(); finishQuestionRead(); resultsOpen.value=false; awardAt=0; awardsUntil=0; scoreAwards.value={}; sessionStarted=true; loadPrevious.value=false; game.value=createGame(); feed.value=[]; answerPreview.value=false; failedAvatars.value={}; }
 onMounted(()=>{
   watch(game,persist,{deep:true,flush:'sync'});
   document.addEventListener('fullscreenchange',syncFullscreen);
   timer=setInterval(()=>{
     now.value=Date.now();
-    if(awardAt && now.value>=awardAt) finishResults();
+    if(awardAt && now.value>=awardAt && !speechBusy.value) finishResults();
     if(awardsUntil && now.value>=awardsUntil) { scoreAwards.value={}; awardsUntil=0; }
     if(!running.value || !round.value) return;
-    if(!round.value.revealed && now.value>=round.value.deadline) reveal();
+    if(!round.value.revealed && !questionReadAt.value && now.value>=round.value.deadline) reveal();
     if(round.value.revealed && auto.value && nextAt && now.value>=nextAt) next();
   },50);
 });
-onBeforeUnmount(()=>{ disconnect(); finishResults(); clearInterval(timer); clearTimeout(rankTimer); document.removeEventListener('fullscreenchange',syncFullscreen); });
+onBeforeUnmount(()=>{ audio?.dispose(); disconnect(); speech?.dispose(); finishResults(); clearInterval(timer); clearTimeout(rankTimer); document.removeEventListener('fullscreenchange',syncFullscreen); });
 </script>
 
 <template>
@@ -178,8 +244,20 @@ onBeforeUnmount(()=>{ disconnect(); finishResults(); clearInterval(timer); clear
       </section>
       <section class="console-card">
         <h3>Điều khiển</h3>
-        <div class="controls"><button class="primary" :disabled="!connected || running || resultsOpen || Object.keys(scoreAwards).length>0" @click="startQuiz">Bắt đầu Quiz</button><button class="secondary" :disabled="!running" @click="stop">Dừng</button><button class="secondary" @click="reset">Phiên mới</button></div>
-        <div class="controls admin-tools"><button class="secondary" :disabled="!round" :aria-expanded="answerPreview" @click="toggleAnswerPreview">{{ answerPreview ? 'Ẩn đáp án' : 'Xem đáp án' }}</button><button class="secondary" :disabled="!connected || !running || resultsOpen || Object.keys(scoreAwards).length>0" @click="next">Câu tiếp →</button></div>
+        <div class="controls"><button type="button" class="secondary" :disabled="soundBusy" :aria-pressed="soundEnabled" @click="toggleAudio">{{ soundBusy ? 'Đang bật…' : soundEnabled ? 'Tắt âm thanh' : 'Bật âm thanh' }}</button></div>
+        <div class="settings">
+          <label>Nhạc nền · {{ musicVolume }}% <input v-model.number="musicVolume" type="range" min="0" max="100" aria-label="Âm lượng nhạc nền" @input="updateAudioLevels"></label>
+          <label>Hiệu ứng · {{ effectsVolume }}% <input v-model.number="effectsVolume" type="range" min="0" max="100" aria-label="Âm lượng hiệu ứng" @input="updateAudioLevels"></label>
+        </div>
+        <p class="conn-status">Nhạc quiz nhẹ · phát liên tục cả lúc chờ và nghỉ giữa câu. Bấm bật một lần trước khi live.</p>
+        <p v-if="soundError" role="alert" class="error">{{ soundError }}</p>
+        <div class="controls"><button type="button" class="secondary" :aria-pressed="speechEnabled" @click="toggleSpeech">{{ speechEnabled ? 'Tắt giọng đọc' : 'Bật giọng đọc' }}</button><button type="button" class="secondary" :disabled="!speechEnabled || !round || speechBusy" @click="readRound">Nghe lại {{ round?.revealed ? 'đáp án' : 'câu hỏi' }}</button></div>
+        <div class="settings"><label>Giọng đọc · {{ speechVolume }}% <input v-model.number="speechVolume" type="range" min="0" max="100" aria-label="Âm lượng giọng đọc" @input="updateSpeechVolume"></label></div>
+        <p class="conn-status" role="status">{{ speechBusy ? (round?.revealed ? 'Đang chuẩn bị / đọc đáp án…' : 'Đang chuẩn bị / đọc câu hỏi · chưa tính giờ trả lời.') : 'Đọc câu hỏi tiếng Việt; đáp án phát âm tiếng Anh và đọc nghĩa. Audio mới được lưu để dùng lại.' }}</p>
+        <p v-if="speechError" role="alert" class="error">{{ speechError }}</p>
+        <p v-if="!connected" class="conn-status">Có thể chạy quiz khi chưa kết nối LIVE. Kết nối để nhận bình luận và quà tặng.</p>
+        <div class="controls"><button class="primary" :disabled="running || resultsOpen || Object.keys(scoreAwards).length>0" @click="startQuiz">Bắt đầu Quiz</button><button class="secondary" :disabled="!running" @click="stop">Dừng</button><button class="secondary" @click="reset">Phiên mới</button></div>
+        <div class="controls admin-tools"><button class="secondary" :disabled="!round" :aria-expanded="answerPreview" @click="toggleAnswerPreview">{{ answerPreview ? 'Ẩn đáp án' : 'Xem đáp án' }}</button><button class="secondary" :disabled="!running || resultsOpen || Object.keys(scoreAwards).length>0" @click="next">Câu tiếp →</button></div>
         <p v-if="answerPreview && round" class="admin-answer">Đáp án (chỉ host thấy): <strong>{{ round.word.answer }}</strong></p>
       </section>
     </div>
@@ -310,8 +388,8 @@ onBeforeUnmount(()=>{ disconnect(); finishResults(); clearInterval(timer); clear
             </ol>
             <p v-if="roundResults.length>8" class="result-more">và {{ roundResults.length-8 }} người khác cũng đúng</p>
             <div v-if="!roundResults.length" class="no-winner"><strong>Chưa ai đoán ra!</strong><span>Câu tiếp theo là cơ hội của bạn.</span></div>
-            <div class="result-timer" aria-hidden="true"><span/></div>
-            <p class="result-footer"><span v-if="roundResults.length" class="wide-only">{{ roundResults.length }} người trả lời đúng · </span>Cộng điểm sau {{ Math.max(0,Math.ceil((awardAt-now)/1000)) }} giây</p>
+            <div class="result-timer" aria-hidden="true"><span :style="{animationPlayState:speechBusy ? 'paused' : 'running'}"/></div>
+            <p class="result-footer"><span v-if="roundResults.length" class="wide-only">{{ roundResults.length }} người trả lời đúng · </span>{{ speechBusy ? 'Đang đọc đáp án…' : `Cộng điểm sau ${Math.max(0,Math.ceil((awardAt-now)/1000))} giây` }}</p>
           </section>
         </div>
       </Transition>

@@ -356,6 +356,50 @@ test('ABCD accepts only an exact case-insensitive letter with timed deferred sco
   assert.equal(settleRound(game).length,3);
 });
 
+test('quiz runs offline and connecting or disconnecting LIVE preserves the current round', async () => {
+  const {readFile}=await import('node:fs/promises');
+  const {runInNewContext}=await import('node:vm');
+  const source=await readFile(new URL('../components/EnglishQuiz.vue',import.meta.url),'utf8');
+  const script=source.match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*;$/gm,'');
+  let live;
+  class Stream {
+    constructor(){live=this;}
+    addEventListener(type,callback){if(type==='live') this.receive=callback;}
+    close(){this.closed=true;}
+  }
+  const state=runInNewContext(script+'; ({game,startQuiz,connect,disconnect,running,connected,interactionActivity});',{
+    ref:value=>({value}),computed:get=>({get value(){return get();}}),
+    createGame,startRound,drawWord,POINTS,WORDS,saveGame,acceptChat,
+    parseLiveUrl:()=>{},EventSource:Stream,watch:()=>{},onMounted:()=>{},onBeforeUnmount:()=>{},
+    window:{localStorage:{setItem(){}}},
+  });
+  for(const handler of ['startQuiz','next']) {
+    const button=source.match(/<button\b[\s\S]*?<\/button>/g).find(button=>button.includes(`@click="${handler}"`));
+    assert.doesNotMatch(button,/!connected/);
+  }
+  state.startQuiz();
+  const round=state.game.value.round;
+  assert.equal(state.running.value,true);
+  assert.equal(state.connected.value,false);
+  assert.equal(state.interactionActivity.value.length,0);
+  state.connect();
+  assert.equal(state.game.value.round,round);
+  assert.equal(round.revealed,false);
+  assert.equal(state.running.value,true);
+  live.receive({data:JSON.stringify({type:'connected',data:{}})});
+  live.receive({data:JSON.stringify({type:'chat',data:{user:{userId:'offline-player',nickname:'An'},comment:round.word.answer}})});
+  assert.equal(state.connected.value,true);
+  assert.equal(state.interactionActivity.value.length,1);
+  assert.equal(round.results[0].id,'offline-player');
+  assert.ok(round.results[0].points>0);
+  state.disconnect();
+  assert.equal(live.closed,true);
+  assert.equal(state.connected.value,false);
+  assert.equal(state.running.value,true);
+  assert.equal(state.game.value.round,round);
+  assert.equal(round.revealed,false);
+});
+
 test('selected mode is captured when starting each quiz round', async () => {
   const {readFile}=await import('node:fs/promises');
   const {runInNewContext}=await import('node:vm');
