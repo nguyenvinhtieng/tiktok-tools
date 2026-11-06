@@ -133,6 +133,12 @@ export function createQuizAudio({ Context=globalThis.AudioContext || globalThis.
       tone(effects,83,t,.08,{level:.05,type:'square',cutoff:4000});
       tone(effects,88,t+.08,.4,{level:.05,type:'square',cutoff:4000});
     },
+    // First correct answer: a quick rising sparkle, short so the shout-out voice can follow.
+    fastest(t) {
+      [76,79,84,88].forEach((pitch,i)=>tone(effects,pitch,t+i*.06,.18,{level:.06,type:'square',cutoff:4200,attack:.004}));
+      [88,91,96].forEach(pitch=>tone(effects,pitch,t+.24,.45,{level:.035,type:'triangle'}));
+      noise(effects,t+.24,.35,{level:.08,frequency:8000});
+    },
     winner(t) {
       [0,.12,.24].forEach(at=>tone(effects,67,t+at,.1,{level:.06,type:'sawtooth',cutoff:2800}));
       [72,76,79].forEach(pitch=>tone(effects,pitch,t+.36,1,{level:.05,type:'sawtooth',cutoff:3000}));

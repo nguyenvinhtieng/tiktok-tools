@@ -7,7 +7,7 @@ const slug = text => text.normalize('NFD').replace(/[\u0300-\u036f]/g, '').repla
 export function createSpeechCache({ directory, synthesize, provider = 'edge-tts-v1', voices = { vi: 'vi-VN-HoaiMyNeural', en: 'en-US-JennyNeural' }, speed = '+0%' }) {
   const pending = new Map();
   let requests = [];
-  return async function getAudio(text, language, { answer = text, part = language } = {}) {
+  return async function getAudio(text, language, { answer = text, part = language, limit = true } = {}) {
     if (typeof text !== 'string' || !text.trim() || text.length > 500 || !['vi', 'en'].includes(language)) throw failure(400, 'Nội dung đọc không hợp lệ.');
     const payload = { text: text.trim(), voice: voices[language], rate: speed };
     const key = createHash('sha256').update(JSON.stringify({ version: 1, provider, language, ...payload })).digest('hex');
@@ -27,9 +27,12 @@ export function createSpeechCache({ directory, synthesize, provider = 'edge-tts-
         }
       } catch (error) { if (error.code !== 'ENOENT') throw error; }
       if (!synthesize) throw failure(503, 'Chưa cấu hình dịch vụ tạo giọng đọc trên server.');
-      requests = requests.filter(time => time > Date.now() - 60000);
-      if (requests.length >= 60) throw failure(429, 'Đã giới hạn tạo giọng đọc. Vui lòng thử lại sau một phút.');
-      requests.push(Date.now());
+      // limit:false is only for bounded, server-initiated warm-up (fixed shout-out clips).
+      if (limit) {
+        requests = requests.filter(time => time > Date.now() - 60000);
+        if (requests.length >= 60) throw failure(429, 'Đã giới hạn tạo giọng đọc. Vui lòng thử lại sau một phút.');
+        requests.push(Date.now());
+      }
       await mkdir(directory, { recursive: true });
       const audio = await synthesize(payload);
       if (!Buffer.isBuffer(audio) || audio.length < 4 || audio.length > 10000000 || !(audio.subarray(0, 3).toString() === 'ID3' || (audio[0] === 255 && (audio[1] & 224) === 224))) throw failure(502, 'Dịch vụ giọng đọc không trả về file MP3 hợp lệ.');

@@ -1,11 +1,43 @@
 <script setup>
 import { parseLiveUrl } from '../server/utils/live.mjs';
 import { WORDS, SOURCES, VOCABULARY } from '../utils/quiz-words.mjs';
+import { shoutoutSeconds, shoutoutText, createBrowserShoutout } from '../utils/quiz-shoutout.mjs';
 import { POINTS, createGame, startRound, roundHint, drawWord, acceptChat, settleRound, acceptGift, giftCoins, saveGame, restoreGame } from '../utils/quiz.mjs';
-const soundEnabled=ref(false), soundBusy=ref(false), soundError=ref(''), musicVolume=ref(25), effectsVolume=ref(35);
+const soundEnabled=ref(true), soundBusy=ref(false), soundError=ref(''), musicVolume=ref(25), effectsVolume=ref(35);
 let audio;
-const speechEnabled=ref(false), speechBusy=ref(false), speechError=ref(''), speechVolume=ref(100);
+const speechEnabled=ref(true), speechBusy=ref(false), speechError=ref(''), speechVolume=ref(100);
 const questionReadAt=ref(0);
+// Browser voices avoid waiting for generated audio.
+const shoutVoice=ref('browser'), announcing=ref(false), shoutout=ref(null), browserVietnamese=ref(true);
+let shoutoutTimer, shoutoutVoiceTimer, browserShout;
+function duck() { audio?.setSpeechActive(speechBusy.value || announcing.value); }
+function getBrowserShout() {
+  browserShout ||= createBrowserShoutout({onState:busy=>{announcing.value=busy; duck();}});
+  browserVietnamese.value=browserShout.hasVietnamese();
+  return browserShout;
+}
+function stopShoutout(hide=true) {
+  if(shoutoutVoiceTimer) { clearTimeout(shoutoutVoiceTimer); shoutoutVoiceTimer=undefined; }
+  browserShout?.stop(); speech?.stopAnnounce?.();
+  if(!hide) return;
+  if(shoutoutTimer) { clearTimeout(shoutoutTimer); shoutoutTimer=undefined; }
+  shoutout.value=null;
+}
+function celebrateFastest(result) {
+  stopShoutout();
+  const id=`${round.value.deadline}-${result.id}`;
+  shoutout.value={id,name:result.name || 'Người chơi',avatar:result.avatar,seconds:shoutoutSeconds(result.elapsed),points:result.points,bonus:result.bonus || 0};
+  shoutoutTimer=setTimeout(()=>{ if(shoutout.value?.id===id) shoutout.value=null; },5500);
+  audio?.cue('fastest');
+  if(!speechEnabled.value || shoutVoice.value==='off') return;
+  // Let the sparkle land before the voice; audio keeps loading during the wait.
+  const delay=soundEnabled.value ? 300 : 0;
+  const useBrowser=shoutVoice.value==='browser' && getBrowserShout().available();
+  if(!useBrowser) { speech?.announce(result.name,result.elapsed,{delay}); return; }
+  shoutoutVoiceTimer=setTimeout(()=>{
+    if(shoutout.value?.id===id && !round.value?.revealed) browserShout.speak(shoutoutText(result.name,result.elapsed),speechVolume.value/100);
+  },delay);
+}
 let speech, speechStarting=false, speechReadVersion=0, speechClockRound;
 function updateSpeechVolume() { speech?.setVolume(speechVolume.value/100); }
 function finishQuestionRead() {
@@ -21,28 +53,29 @@ async function readRound() {
   try { return await speech.speak(round.value.word.answer,round.value.revealed); }
   finally { if(version===speechReadVersion) finishQuestionRead(); }
 }
-async function toggleSpeech() {
+async function toggleSpeech(force=false) {
   if(speechStarting) return;
-  if(speechEnabled.value) { speechEnabled.value=false; speech?.stop(); return; }
+  if(speechEnabled.value && force!==true) { speechEnabled.value=false; stopShoutout(false); speech?.stop(); return; }
   speechStarting=true; speechError.value='';
   try {
     if(!speech) {
-      const {createQuizSpeech}=await import('../utils/quiz-speech.mjs');
-      speech=createQuizSpeech({onState:busy=>{speechBusy.value=busy; audio?.setSpeechActive(busy);},onError:message=>{speechError.value=message;}});
+      const {createBrowserQuizSpeech}=await import('../utils/quiz-browser-speech.mjs');
+      speech=createBrowserQuizSpeech({onState:busy=>{speechBusy.value=busy; duck();},onAnnounce:busy=>{announcing.value=busy; duck();},onError:message=>{speechError.value=message;}});
     }
     updateSpeechVolume(); await speech.start(); speechEnabled.value=true;
+    speech.prefetchShoutout(); getBrowserShout();
     readRound(); prepareSpeech();
   } catch(e) { speechError.value=e.message || 'Không bật được giọng đọc.'; }
   finally { speechStarting=false; }
 }
 function updateAudioLevels() { audio?.setLevels(musicVolume.value/100,effectsVolume.value/100); }
-async function toggleAudio() {
+async function toggleAudio(force=false) {
   if(soundBusy.value) return;
-  if(soundEnabled.value) { audio?.stop(); soundEnabled.value=false; return; }
+  if(soundEnabled.value && force!==true) { audio?.stop(); soundEnabled.value=false; return; }
   soundBusy.value=true; soundError.value='';
   try {
     if(!audio) { const {createQuizAudio}=await import('../utils/quiz-audio.mjs'); audio=createQuizAudio(); }
-    updateAudioLevels(); audio.setSpeechActive(speechBusy.value); audio.setPhase(audioPhase.value); audio.setTension(1-timeRatio.value);
+    updateAudioLevels(); audio.setSpeechActive(speechBusy.value || announcing.value); audio.setPhase(audioPhase.value); audio.setTension(1-timeRatio.value);
     await audio.start(); soundEnabled.value=true;
   } catch(e) { soundError.value=e.message || 'Không bật được âm thanh. Hãy thử lại.'; }
   finally { soundBusy.value=false; }
@@ -51,9 +84,31 @@ const url=ref(''), status=ref('Chưa kết nối'), error=ref(''), active=ref(fa
 const game=ref(createGame()), band=ref('mixed'), seconds=ref(30), giftRate=ref(10), auto=ref(true), running=ref(false);
 const mode=ref('text');
 const choiceMode=computed(()=>(round.value?.mode || mode.value)==='abcd');
-const now=ref(Date.now()), screen=ref(null), fullscreen=ref(false), pinned=ref(false), feed=ref([]);
+const now=ref(Date.now()), screen=ref(null), fullscreen=ref(false), pinned=ref(false), giftNotice=ref(null);
 const answerPreview=ref(false), rankChanges=ref({}), failedAvatars=ref({});
-const activity=ref([]), interactionActivity=ref([]), participantActivity=ref(null);
+// Only what the stage shows is kept: the comment box has no scroll-back, so 10 rows are enough;
+// other LIVE events (join, like, follow…) keep just the latest one.
+const MAX_COMMENTS=10;
+const interactionActivity=ref([]), lastEvent=ref(null);
+let pendingActivity=[], activityFrame, persistTimer;
+function clearPendingActivity() {
+  if(activityFrame!==undefined && typeof cancelAnimationFrame==='function') cancelAnimationFrame(activityFrame);
+  activityFrame=undefined; pendingActivity=[];
+}
+function displayActivity(item) {
+  // Scoring has already run. Only the visual feed is batched and bounded.
+  if(typeof requestAnimationFrame!=='function') {
+    interactionActivity.value=[...interactionActivity.value.slice(1-MAX_COMMENTS),item];
+    return;
+  }
+  pendingActivity.push(item);
+  if(pendingActivity.length>MAX_COMMENTS) pendingActivity.shift();
+  if(activityFrame!==undefined) return;
+  activityFrame=requestAnimationFrame(()=>{
+    interactionActivity.value=[...interactionActivity.value,...pendingActivity].slice(-MAX_COMMENTS);
+    pendingActivity=[]; activityFrame=undefined;
+  });
+}
 const interactionRows=ref(null);
 const resultsOpen=ref(false), scoreAwards=ref({});
 let awardAt=0, awardsUntil=0;
@@ -68,6 +123,10 @@ function persist() {
   if(!sessionStarted) return;
   try { if(saveGame(window.localStorage,game.value)) return; } catch {}
   error.value='Không lưu được tiến trình trên trình duyệt. Hãy kiểm tra quyền lưu trữ hoặc dung lượng trống.';
+}
+function schedulePersist() {
+  if(persistTimer!==undefined) return;
+  persistTimer=setTimeout(()=>{ persistTimer=undefined; persist(); },250);
 }
 const round=computed(()=>game.value.round);
 let preparedNext;
@@ -121,7 +180,7 @@ watch(()=>ranking.value.map(p=>p.id),(ids,previous=[])=>{
   clearTimeout(rankTimer); rankTimer=setTimeout(()=>{ rankChanges.value={}; },1800);
 });
 function toggleAnswerPreview() { answerPreview.value=!answerPreview.value; }
-function notice(text) { feed.value.unshift({id:++feedId,text}); feed.value=feed.value.slice(0,6); }
+function notice(text) { giftNotice.value={id:++feedId,text}; }
 function avatarOf(user) {
   return [user.profilePictureUrl,user.avatarThumb?.urlList?.[0],user.avatarThumb?.url_list?.[0]].find(url=>typeof url==='string' && /^https:\/\//i.test(url)) || '';
 }
@@ -134,11 +193,9 @@ function recordActivity(type,data,points=0) {
     : labels[type] ? (['member','like','follow','share'].includes(type) ? `${name} ${labels[type]}` : labels[type]) : '';
   if(!text) return;
   const body=type==='chat' ? (points>0 ? 'đã trả lời đúng!' : data.comment || '') : type==='gift' ? gift : text;
-  const item={id:++feedId,text,time:new Date().toLocaleTimeString('vi-VN'),type,name,body,avatar:avatarOf(user),correct:points>0};
-  if(type==='member') participantActivity.value=item;
-  if(type==='chat' || type==='gift') interactionActivity.value=[...interactionActivity.value,item].slice(-100);
-  activity.value.unshift(item);
-  activity.value=activity.value.slice(0,3);
+  const item={id:++feedId,text,type,name,body,avatar:avatarOf(user),correct:points>0};
+  if(type!=='chat' && type!=='gift') { lastEvent.value=item; return; }
+  displayActivity(item);
 }
 function startQuiz() {
   resultsOpen.value=false; awardAt=0; awardsUntil=0; scoreAwards.value={};
@@ -146,7 +203,7 @@ function startQuiz() {
   if(loadPrevious.value) {
     try { initial=restoreGame(window.localStorage); } catch {}
   }
-  preparedNext=undefined; game.value=initial; feed.value=[]; answerPreview.value=false; failedAvatars.value={};
+  preparedNext=undefined; game.value=initial; giftNotice.value=null; answerPreview.value=false; failedAvatars.value={};
   sessionStarted=true;
   next();
   persist();
@@ -160,13 +217,13 @@ function next() {
   const word=useReserved ? reserved.word : drawWord(game.value,WORDS,band.value);
   if(useReserved && word) game.value.deck=reserved.deck;
   if(!word) { stop(); error.value='Band này đã hết từ trong lượt hiện tại. Chọn band khác hoặc Ngẫu nhiên để tiếp tục; bộ từ chỉ reset khi đã rút hết tất cả.'; return; }
-  error.value=''; answerPreview.value=false; now.value=Date.now(); nextAt=0;
+  stopShoutout(); error.value=''; answerPreview.value=false; now.value=Date.now(); nextAt=0;
   startRound(game.value,word,now.value,seconds.value,Math.random,mode.value,WORDS);
   running.value=true; audio?.cue('question'); readRound(); prepareSpeech();
 }
 function reveal(readAnswer=true) {
   if(!round.value || round.value.revealed) return;
-  round.value.revealed=true; resultsOpen.value=true; audio?.cue('reveal',round.value.answered.length>0);
+  stopShoutout(); round.value.closedAt=Date.now(); round.value.revealed=true; resultsOpen.value=true; audio?.cue('reveal',round.value.answered.length>0);
   awardAt=Date.now()+5000; nextAt=0;
   if(readAnswer) readRound();
 }
@@ -180,19 +237,43 @@ function finishResults() {
   persist();
 }
 function stop(readAnswer=true) { reveal(readAnswer); running.value=false; nextAt=0; }
-function disconnect() { source?.close(); source=undefined; active.value=false; connected.value=false; status.value='Đã ngắt kết nối'; }
+function updateFastestBonus() {
+  const results=round.value.results;
+  const fastest=results.reduce((first,result)=>!first || result.time<first.time ? result : first,null);
+  // Reassign if an earlier receipt was delayed; never compound or duplicate a bonus.
+  for(const result of results) {
+    const base=result.points-(result.bonus || 0);
+    result.bonus=result===fastest ? Math.floor(base*.5) : 0;
+    result.points=base+result.bonus;
+  }
+  return fastest;
+}
+function disconnect() { clearPendingActivity(); source?.close(); source=undefined; active.value=false; connected.value=false; status.value='Đã ngắt kết nối'; }
 function connect() {
   error.value='';
   try { parseLiveUrl(url.value); } catch(e) { error.value=e.message; return; }
-  disconnect(); activity.value=[]; interactionActivity.value=[]; participantActivity.value=null; active.value=true; status.value='Đang kết nối…';
+  disconnect(); interactionActivity.value=[]; lastEvent.value=null; active.value=true; status.value='Đang kết nối…';
   const current=new EventSource(`/api/live?url=${encodeURIComponent(url.value.trim())}`); source=current;
+  let serverClockOffset;
   current.addEventListener('live',message=>{
     if(source!==current) return;
     try {
       const event=JSON.parse(message.data), data=event.data || {};
-      const points=event.type==='chat' && running.value && !questionReadAt.value ? acceptChat(game.value,data,Date.now(),true) : 0;
-      if(points>0) audio?.cue('correct');
+      const processedAt=Date.now(), serverReceivedAt=Date.parse(event.receivedAt);
+      // Calibrate once on connected; do not mistake a busy browser's queue delay for clock skew.
+      if(event.type==='connected' && Number.isFinite(serverReceivedAt)) serverClockOffset=processedAt-serverReceivedAt;
+      const hasReceipt=serverClockOffset!==undefined && Number.isFinite(serverReceivedAt);
+      const receivedAt=hasReceipt ? Math.min(processedAt,serverReceivedAt+serverClockOffset) : processedAt;
+      const answerAt=questionReadAt.value && !round.value?.revealed ? Math.min(receivedAt,questionReadAt.value) : receivedAt;
+      let points=event.type==='chat' && running.value ? acceptChat(game.value,data,answerAt,true,hasReceipt) : 0;
+      if(points>0) {
+        const fastest=updateFastestBonus(), result=round.value.results.at(-1);
+        points=result.points;
+        if(result===fastest) { try { celebrateFastest(result); } catch {} }
+        else audio?.cue('correct');
+      }
       recordActivity(event.type,data,points);
+      if(event.type==='chat' && speechEnabled.value && shoutVoice.value==='edge') speech?.warmName?.((data.user || data).nickname || (data.user || data).uniqueId);
       if(event.type==='connected') { connected.value=true; status.value='Đang nhận comment & quà'; }
       if(event.type==='gift' && sessionStarted) {
         const points=acceptGift(game.value,data,giftRate.value);
@@ -213,9 +294,18 @@ async function toggleFullscreen() {
   } catch { pinned.value=true; }
 }
 function syncFullscreen() { fullscreen.value=document.fullscreenElement===screen.value; }
-function reset() { if(!window.confirm('Xóa toàn bộ điểm và bắt đầu phiên mới?')) return; preparedNext=undefined; disconnect(); stop(false); speech?.stop(); finishQuestionRead(); resultsOpen.value=false; awardAt=0; awardsUntil=0; scoreAwards.value={}; sessionStarted=true; loadPrevious.value=false; game.value=createGame(); feed.value=[]; answerPreview.value=false; failedAvatars.value={}; }
+function reset() { if(!window.confirm('Xóa toàn bộ điểm và bắt đầu phiên mới?')) return; preparedNext=undefined; disconnect(); stop(false); stopShoutout(); speech?.stop(); finishQuestionRead(); resultsOpen.value=false; awardAt=0; awardsUntil=0; scoreAwards.value={}; sessionStarted=true; loadPrevious.value=false; game.value=createGame(); giftNotice.value=null; answerPreview.value=false; failedAvatars.value={}; }
+function activateDefaultAudio() {
+  if(soundEnabled.value) void toggleAudio(true);
+  if(speechEnabled.value) void toggleSpeech(true);
+  document.removeEventListener('pointerdown',activateDefaultAudio);
+  document.removeEventListener('keydown',activateDefaultAudio);
+}
 onMounted(()=>{
-  watch(game,persist,{deep:true,flush:'sync'});
+  document.addEventListener('pointerdown',activateDefaultAudio);
+  document.addEventListener('keydown',activateDefaultAudio);
+  if(typeof window!=='undefined') window.addEventListener?.('pagehide',persist);
+  watch(game,schedulePersist,{deep:true,flush:'post'});
   document.addEventListener('fullscreenchange',syncFullscreen);
   timer=setInterval(()=>{
     now.value=Date.now();
@@ -226,7 +316,7 @@ onMounted(()=>{
     if(round.value.revealed && auto.value && nextAt && now.value>=nextAt) next();
   },50);
 });
-onBeforeUnmount(()=>{ audio?.dispose(); disconnect(); speech?.dispose(); finishResults(); clearInterval(timer); clearTimeout(rankTimer); document.removeEventListener('fullscreenchange',syncFullscreen); });
+onBeforeUnmount(()=>{ document.removeEventListener('pointerdown',activateDefaultAudio); document.removeEventListener('keydown',activateDefaultAudio); window.removeEventListener?.('pagehide',persist); stopShoutout(); audio?.dispose(); disconnect(); speech?.dispose(); finishResults(); persist(); clearTimeout(persistTimer); clearInterval(timer); clearTimeout(rankTimer); document.removeEventListener('fullscreenchange',syncFullscreen); });
 </script>
 
 <template>
@@ -261,8 +351,9 @@ onBeforeUnmount(()=>{ audio?.dispose(); disconnect(); speech?.dispose(); finishR
         <p class="conn-status">Nhạc game show · hồi hộp và dồn dập dần khi đếm giờ, tự hạ nhỏ khi đang đọc. Bấm bật một lần trước khi live.</p>
         <p v-if="soundError" role="alert" class="error">{{ soundError }}</p>
         <div class="controls"><button type="button" class="secondary" :aria-pressed="speechEnabled" @click="toggleSpeech">{{ speechEnabled ? 'Tắt giọng đọc' : 'Bật giọng đọc' }}</button><button type="button" class="secondary" :disabled="!speechEnabled || !round || speechBusy" @click="readRound">Nghe lại {{ round?.revealed ? 'đáp án' : 'câu hỏi' }}</button></div>
-        <div class="settings"><label>Giọng đọc · {{ speechVolume }}% <input v-model.number="speechVolume" type="range" min="0" max="100" aria-label="Âm lượng giọng đọc" @input="updateSpeechVolume"></label></div>
-        <p class="conn-status" role="status">{{ speechBusy ? (round?.revealed ? 'Đang chuẩn bị / đọc đáp án…' : 'Đang chuẩn bị / đọc câu hỏi · chưa tính giờ trả lời.') : 'Đọc câu hỏi tiếng Việt; đáp án phát âm tiếng Anh và đọc nghĩa. Audio mới được lưu để dùng lại.' }}</p>
+        <div class="settings"><label>Giọng đọc · {{ speechVolume }}% <input v-model.number="speechVolume" type="range" min="0" max="100" aria-label="Âm lượng giọng đọc" @input="updateSpeechVolume"></label><label>Khen người nhanh nhất <select v-model="shoutVoice"><option value="browser">Giọng trình duyệt · tức thì</option><option value="off">Chỉ popup, không đọc</option></select></label></div>
+        <p v-if="shoutVoice==='browser' && speechEnabled && !browserVietnamese" class="conn-status">Trình duyệt chưa có giọng tiếng Việt, tên có thể đọc sai. Hãy cài thêm giọng tiếng Việt trong hệ điều hành.</p>
+        <p class="conn-status" role="status">{{ speechBusy ? (round?.revealed ? 'Đang chuẩn bị / đọc đáp án…' : 'Đang chuẩn bị / đọc câu hỏi · chưa tính giờ trả lời.') : 'Đọc câu hỏi tiếng Việt; đáp án phát âm tiếng Anh và đọc nghĩa. Dùng giọng trình duyệt, ưu tiên giọng có sẵn trên máy.' }}</p>
         <p v-if="speechError" role="alert" class="error">{{ speechError }}</p>
         <p v-if="!connected" class="conn-status">Có thể chạy quiz khi chưa kết nối LIVE. Kết nối để nhận bình luận và quà tặng.</p>
         <div class="controls"><button class="primary" :disabled="running || resultsOpen || Object.keys(scoreAwards).length>0" @click="startQuiz">Bắt đầu Quiz</button><button class="secondary" :disabled="!running" @click="stop">Dừng</button><button class="secondary" @click="reset">Phiên mới</button></div>
@@ -335,6 +426,17 @@ onBeforeUnmount(()=>{ audio?.dispose(); disconnect(); speech?.dispose(); finishR
             </div>
             <p class="lobby-note">Host sắp bắt đầu. Chuẩn bị comment nhé!</p>
           </div>
+          <Transition name="shoutout">
+            <div v-if="shoutout && round && !round.revealed" :key="shoutout.id" class="shoutout" role="status" aria-live="polite">
+              <span class="shout-avatar">
+                <img v-if="shoutout.avatar && failedAvatars[shoutout.id]!==shoutout.avatar" :src="shoutout.avatar" alt="" referrerpolicy="no-referrer" @error="failedAvatars[shoutout.id]=shoutout.avatar">
+                <span v-else>{{ initialOf(shoutout.name) }}</span>
+                <i class="bolt" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></svg></i>
+              </span>
+              <span class="shout-body"><small>Nhanh nhất! · Bonus +{{ shoutout.bonus }}</small><strong>{{ shoutout.name }}</strong><span>trả lời đúng trong <b>{{ shoutout.seconds }}</b> giây</span></span>
+              <b class="shout-points">+{{ shoutout.points }}</b>
+            </div>
+          </Transition>
           <p class="comment-cta"><span class="bubble" aria-hidden="true"/>Comment<span class="wide-only"> đáp án</span> <em>{{ choiceMode ? 'A, B, C hoặc D' : 'tiếng Anh' }}</em><span class="cta-tail"> để ghi điểm</span></p>
         </div>
 
@@ -361,7 +463,7 @@ onBeforeUnmount(()=>{ audio?.dispose(); disconnect(); speech?.dispose(); finishR
             </div>
           </aside>
           <div class="gift-strip" aria-live="polite">
-            <TransitionGroup v-if="feed.length" name="feed" tag="div" class="ticker"><p v-for="item in feed.slice(0,1)" :key="item.id"><span class="gift-icon" aria-hidden="true"/>{{ item.text }}</p></TransitionGroup>
+            <div v-if="giftNotice" class="ticker"><Transition name="feed"><p :key="giftNotice.id"><span class="gift-icon" aria-hidden="true"/>{{ giftNotice.text }}</p></Transition></div>
             <p v-else class="gift-tip"><span class="gift-icon" aria-hidden="true"/><span class="wide-only">Tặng quà để cộng điểm · </span>1 xu quà = {{ giftRate }} điểm</p>
           </div>
           <section class="live-activity">
@@ -390,7 +492,7 @@ onBeforeUnmount(()=>{ audio?.dispose(); disconnect(); speech?.dispose(); finishR
               <li v-for="(item,i) in roundResults.slice(0,8)" :key="item.id" :class="{first:i===0}" :style="{animationDelay:`${.7+i*.09}s`}">
                 <span class="pos">{{ i+1 }}</span>
                 <span class="avatar"><img v-if="item.avatar && failedAvatars[item.id]!==item.avatar" :src="item.avatar" alt="" referrerpolicy="no-referrer" @error="failedAvatars[item.id]=item.avatar"><span v-else>{{ initialOf(item.name) }}</span></span>
-                <strong>{{ item.name || 'Người chơi' }}<small v-if="i===0" class="fastest">Nhanh nhất</small></strong>
+                <strong>{{ item.name || 'Người chơi' }}<small v-if="i===0" class="fastest">Nhanh nhất<span v-if="item.bonus"> · Bonus +{{ item.bonus }}</span></small></strong>
                 <time>{{ (item.elapsed/1000).toLocaleString('vi-VN',{maximumFractionDigits:1}) }}s</time>
                 <b>+{{ item.points }}</b>
               </li>
@@ -789,6 +891,23 @@ button:disabled{opacity:.45;cursor:not-allowed}
   .arena.full .choice-key{width:34px;height:34px;font-size:19px}
   .arena.full .fs-btn{top:max(6px,env(safe-area-inset-top));right:6px;padding:4px 8px;font-size:10px}
 }
+.shoutout{position:absolute;left:50%;bottom:74px;z-index:6;display:flex;align-items:center;gap:14px;width:max-content;max-width:calc(100% - 28px);padding:10px 16px 10px 10px;border:3px solid #000;border-radius:999px;background:var(--yellow);color:var(--ink);box-shadow:0 6px 0 #000;transform:translateX(-50%);overflow:hidden}
+.shoutout::after{content:'';position:absolute;inset:0;background:linear-gradient(100deg,transparent 30%,#ffffffb3 50%,transparent 70%);transform:translateX(-100%);animation:shout-shine 1.1s .45s ease-out}
+.shout-avatar{position:relative;flex-shrink:0;display:grid;place-items:center;width:54px;height:54px;border:3px solid #000;border-radius:50%;background:#fff;font-size:22px;font-weight:800}
+.shout-avatar img{width:100%;height:100%;border-radius:50%;object-fit:cover}
+.bolt{position:absolute;right:-7px;bottom:-5px;display:grid;place-items:center;width:24px;height:24px;border:2px solid #000;border-radius:50%;background:var(--pink);animation:check-pop .5s .3s cubic-bezier(.2,1.8,.4,1) both}
+.bolt svg{width:14px;fill:var(--yellow)}
+.shout-body{display:flex;flex-direction:column;min-width:0;line-height:1.2}
+.shout-body small{font-size:11px;font-weight:800;letter-spacing:.8px;text-transform:uppercase;color:var(--pink)}
+.shout-body strong{max-width:min(340px,40vw);overflow:hidden;font-size:clamp(17px,1.8vw,24px);font-weight:800;text-overflow:ellipsis;white-space:nowrap}
+.shout-body span{font-size:14px;font-weight:600}.shout-body b{font-size:17px;font-weight:800}
+.shout-points{flex-shrink:0;padding:6px 12px;border:2px solid #000;border-radius:999px;background:var(--green);font-size:18px;font-weight:800}
+.shoutout-enter-active{animation:shout-in .55s cubic-bezier(.2,1.6,.4,1)}
+.shoutout-leave-active{transition:opacity .3s,transform .3s}
+.shoutout-leave-to{opacity:0;transform:translate(-50%,14px) scale(.9)}
+@keyframes shout-in{0%{opacity:0;transform:translate(-50%,36px) scale(.6)}100%{opacity:1;transform:translate(-50%,0) scale(1)}}
+@keyframes shout-shine{100%{transform:translateX(100%)}}
+@media (max-width:600px){.shoutout{gap:10px;bottom:64px;padding:8px 12px 8px 8px}.shout-avatar{width:42px;height:42px}.shout-points{font-size:15px;padding:4px 9px}}
 @media (hover:none){.arena.full .fs-btn{opacity:.4}}
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
 </style>

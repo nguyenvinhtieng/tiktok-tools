@@ -51,7 +51,7 @@ export function startRound(game, word, now=Date.now(), seconds=30, random=Math.r
   }
   const letters=Array.from(word.answer).flatMap((letter,index)=>/\p{L}/u.test(letter) ? [index] : []);
   const candidates=letters.slice(1);
-  game.round={word, mode, choices, deadline:now+seconds*1000, seconds, answered:[], results:[], settled:false, revealed:false,
+  game.round={word, mode, choices, startedAt:now, deadline:now+seconds*1000, seconds, answered:[], results:[], settled:false, revealed:false,
     hintLetters:[letters[0],candidates[Math.floor(random()*candidates.length)]].filter(index=>index!==undefined)};
 }
 export function roundHint(round, now=Date.now()) {
@@ -74,9 +74,11 @@ function player(game, user) {
   if(user.avatar) p.avatar=user.avatar;
   return p;
 }
-export function acceptChat(game, data, now=Date.now(), defer=false) {
+export function acceptChat(game, data, now=Date.now(), defer=false, receivedBeforeReveal=false) {
   const round=game.round, user=identity(data);
-  if (!user.id || !round || round.revealed || now>=round.deadline || round.answered.includes(user.id)) return 0;
+  if (!user.id || !round || !Number.isFinite(now) || now<(round.startedAt ?? round.deadline-round.seconds*1000) ||
+      round.settled || (round.revealed && !(defer && receivedBeforeReveal && now<round.closedAt)) ||
+      now>=round.deadline || round.answered.includes(user.id)) return 0;
   const comment=normalize(data.comment);
   if(round.mode==='abcd') {
     const key=String(data.comment || '').toLowerCase();
@@ -84,7 +86,7 @@ export function acceptChat(game, data, now=Date.now(), defer=false) {
   } else if (![round.word.answer,...(round.word.aliases || [])].some(a=>normalize(a) && comment.includes(normalize(a)))) return 0;
   const points=roundHint(round,now).points;
   if(defer) {
-    (round.results ||= []).push({...user,points,time:now,elapsed:now-(round.deadline-round.seconds*1000)});
+    (round.results ||= []).push({...user,points,time:now,elapsed:Math.max(0,now-(round.deadline-round.seconds*1000))});
     round.answered.push(user.id);
     return points;
   }

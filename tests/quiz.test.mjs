@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createGame, startRound, roundHint, acceptChat, settleRound, acceptGift, pickWord, drawWord, normalize, POINTS, saveGame, restoreGame, STORAGE_KEY } from '../utils/quiz.mjs';
 import { WORDS } from '../utils/quiz-words.mjs';
+import { shoutoutSeconds, shoutoutText, createBrowserShoutout } from '../utils/quiz-shoutout.mjs';
 test('deferred answers keep scores unchanged until results finish and settle once', () => {
   const game=createGame();
   startRound(game,{answer:'apple',band:'A2'},1000,30);
@@ -60,14 +61,14 @@ test('quiz shows results for five seconds before score animation and next round'
   assert.equal(Object.keys(state.scoreAwards.value).length,0);
   assert.doesNotMatch(source,/<section class="participant-activity"/);
 });
-test('live activity shows real incoming actions before quiz starts and keeps three newest', async () => {
+test('live activity shows real incoming actions before quiz starts and keeps one latest non-comment event', async () => {
   const {readFile}=await import('node:fs/promises');
   const {runInNewContext}=await import('node:vm');
   const source=await readFile(new URL('../components/EnglishQuiz.vue',import.meta.url),'utf8');
   const script=source.match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*;$/gm,'');
   let receive;
   class EventSource { addEventListener(type,callback){receive=callback;} close(){} }
-  const state=runInNewContext(script+`; connect(); ({activity,game});`,{
+  const state=runInNewContext(script+`; connect(); ({interactionActivity,lastEvent,game});`,{
     ref:value=>({value}),computed:get=>({get value(){return get();}}),createGame,POINTS,WORDS,EventSource,
     parseLiveUrl:()=>{},onMounted:()=>{},onBeforeUnmount:()=>{},watch:()=>{},
   });
@@ -75,11 +76,12 @@ test('live activity shows real incoming actions before quiz starts and keeps thr
   send('connected'); send('member',{user:{nickname:'An'}});
   send('chat',{user:{nickname:'Bình'},comment:'ABC'});
   send('gift',{user:{nickname:'Chi'},gift:{name:'Rose'},repeatCount:2});
-  assert.equal(state.activity.value.length,3);
-  assert.match(state.activity.value[0].text,/Chi.*Rose.*2/);
-  assert.equal(state.activity.value[1].text,'Bình: ABC');
-  assert.match(state.activity.value[2].text,/An.*tham gia/);
-  send('heartbeat'); assert.equal(state.activity.value.length,3);
+  assert.match(state.lastEvent.value.text,/An.*tham gia/);
+  assert.equal(state.interactionActivity.value.map(item=>item.text).join('|'),'Bình: ABC|Chi tặng Rose ×2');
+  send('like',{user:{nickname:'Dũng'}});
+  assert.match(state.lastEvent.value.text,/Dũng.*thích/);
+  assert.equal(state.interactionActivity.value.length,2);
+  send('heartbeat'); assert.match(state.lastEvent.value.text,/Dũng/);
   assert.equal(Object.keys(state.game.value.players).length,0);
 });
 test('countdown tracks fractional time, clamps to zero and resets for the next round', async () => {
@@ -307,7 +309,7 @@ test('member arrivals stay on one line without displacing comments and gifts', a
   const {runInNewContext}=await import('node:vm');
   const source=await readFile(new URL('../components/EnglishQuiz.vue',import.meta.url),'utf8');
   const script=source.match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*;$/gm,'');
-  const state=runInNewContext(script+`; ({recordActivity,interactionActivity,participantActivity,connect});`,{
+  const state=runInNewContext(script+`; ({recordActivity,interactionActivity,lastEvent,connect});`,{
     ref:value=>({value}),computed:get=>({get value(){return get();}}),createGame,POINTS,WORDS,
     parseLiveUrl:()=>{},EventSource:class {addEventListener(){} close(){}},
     onMounted:()=>{},onBeforeUnmount:()=>{},watch:()=>{},
@@ -316,15 +318,16 @@ test('member arrivals stay on one line without displacing comments and gifts', a
   state.recordActivity('gift',{nickname:'Bình',giftName:'Rose'});
   for(let i=0;i<10;i++) state.recordActivity('member',{nickname:`Khách ${i}`});
   assert.equal(state.interactionActivity.value.length,2);
-  assert.match(state.interactionActivity.value[0].text,/Rose/);
-  assert.match(state.interactionActivity.value[1].text,/hello/);
-  assert.match(state.participantActivity.value.text,/Khách 9/);
-  for(let i=0;i<4;i++) state.recordActivity('chat',{comment:`comment ${i}`});
-  assert.equal(state.interactionActivity.value.length,3);
-  assert.match(state.interactionActivity.value[0].text,/comment 3/);
+  assert.match(state.interactionActivity.value[0].text,/hello/);
+  assert.match(state.interactionActivity.value[1].text,/Rose/);
+  assert.match(state.lastEvent.value.text,/Khách 9/);
+  for(let i=0;i<15;i++) state.recordActivity('chat',{comment:`comment ${i}`});
+  assert.equal(state.interactionActivity.value.length,10);
+  assert.match(state.interactionActivity.value[0].text,/comment 5/);
+  assert.match(state.interactionActivity.value[9].text,/comment 14/);
   state.connect();
   assert.equal(state.interactionActivity.value.length,0);
-  assert.equal(state.participantActivity.value,null);
+  assert.equal(state.lastEvent.value,null);
 });
 
 
@@ -367,9 +370,9 @@ test('quiz runs offline and connecting or disconnecting LIVE preserves the curre
     addEventListener(type,callback){if(type==='live') this.receive=callback;}
     close(){this.closed=true;}
   }
-  const state=runInNewContext(script+'; ({game,startQuiz,connect,disconnect,running,connected,interactionActivity});',{
+  const state=runInNewContext(script+'; ({game,startQuiz,connect,disconnect,running,connected,interactionActivity,shoutout});',{
     ref:value=>({value}),computed:get=>({get value(){return get();}}),
-    createGame,startRound,drawWord,POINTS,WORDS,saveGame,acceptChat,
+    createGame,startRound,drawWord,POINTS,WORDS,saveGame,acceptChat,shoutoutSeconds,shoutoutText,createBrowserShoutout,setTimeout,clearTimeout,
     parseLiveUrl:()=>{},EventSource:Stream,watch:()=>{},onMounted:()=>{},onBeforeUnmount:()=>{},
     window:{localStorage:{setItem(){}}},
   });
@@ -392,6 +395,10 @@ test('quiz runs offline and connecting or disconnecting LIVE preserves the curre
   assert.equal(state.interactionActivity.value.length,1);
   assert.equal(round.results[0].id,'offline-player');
   assert.ok(round.results[0].points>0);
+  assert.equal(state.shoutout.value.name,'An');
+  assert.match(state.shoutout.value.seconds,/^\d+(,\d)?$/);
+  live.receive({data:JSON.stringify({type:'chat',data:{user:{userId:'second',nickname:'Bình'},comment:round.word.answer}})});
+  assert.equal(state.shoutout.value.name,'An');
   state.disconnect();
   assert.equal(live.closed,true);
   assert.equal(state.connected.value,false);
