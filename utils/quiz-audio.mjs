@@ -162,7 +162,15 @@ export function createQuizAudio({ Context=globalThis.AudioContext || globalThis.
         music.connect(musicFilter); musicFilter.connect(master); effects.connect(master); master.connect(compressor); compressor.connect(ctx.destination);
         music.gain.value=musicLevel*(speechActive ? DUCK.music : 1); effects.gain.value=effectLevel*(speechActive ? DUCK.effects : 1); master.gain.value=0;
       }
-      await ctx.resume();
+      // Android browsers/WebViews can leave resume pending when activation is blocked.
+      // Bound the wait so the UI can release its busy state and allow another gesture.
+      let resumeTimeout;
+      try {
+        await Promise.race([
+          ctx.resume(),
+          new Promise((_,reject)=>{ resumeTimeout=setTimeout(()=>reject(new Error('Hãy bấm bật âm thanh để thử lại.')),3000); }),
+        ]);
+      } finally { clearTimeout(resumeTimeout); }
       if(disposed) return;
       if(ctx.state!=='running') throw new Error('Hãy bấm bật âm thanh để thử lại.');
       enabled=true; volume(master,.7);

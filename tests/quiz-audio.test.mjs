@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createQuizAudio } from '../utils/quiz-audio.mjs';
-function fixture() {
+function fixture(resume) {
   const nodes=[], oscillators=[], sources=[], filters=[]; let scheduled=0,cancelled=0,closed=0;
   const param=()=>({value:0,cancelScheduledValues(){},setTargetAtTime(v){this.value=v;},setValueAtTime(){},linearRampToValueAtTime(){},exponentialRampToValueAtTime(){}});
   class Context {
@@ -14,6 +14,7 @@ function fixture() {
     createOscillator(){const node={frequency:param(),connect(){},disconnect(){},start(){},stop(){}};oscillators.push(node);return node;}
     async resume(){this.state='running';} async close(){closed++;}
   }
+  if(resume) Context.prototype.resume=resume;
   const audio=createQuizAudio({Context,schedule(){scheduled++;return 1;},cancel(){cancelled++;}});
   return {audio,nodes,oscillators,sources,filters,voices:()=>oscillators.length+sources.length,counts:()=>({scheduled,cancelled,closed})};
 }
@@ -24,6 +25,23 @@ test('music starts only on request, uses one scheduler and stops/disposes cleanl
   f.audio.stop(); const count=f.voices(); f.audio.cue('winner'); assert.equal(f.voices(),count);
   await f.audio.start(); f.audio.dispose(); assert.deepEqual(f.counts(),{scheduled:2,cancelled:2,closed:1});
   await assert.rejects(()=>f.audio.start());
+});
+test('blocked mobile audio times out, ignores late completion and permits retry',async t=>{
+  t.mock.timers.enable({apis:['setTimeout']});
+  let release, attempts=0;
+  const f=fixture(function(){
+    if(++attempts===1) return new Promise(resolve=>{release=()=>{this.state='running';resolve();};});
+    this.state='running'; return Promise.resolve();
+  });
+  const rejected=assert.rejects(f.audio.start(),/bấm bật âm thanh/);
+  t.mock.timers.tick(3000);
+  await rejected;
+  release(); await Promise.resolve();
+  assert.equal(f.counts().scheduled,0);
+  assert.equal(f.voices(),0);
+  await f.audio.start();
+  assert.equal(f.counts().scheduled,1);
+  f.audio.dispose();
 });
 test('levels are bounded and repeated cues cannot pile up on incoming events',async()=>{
   const f=fixture(); f.audio.setLevels(10,-2); await f.audio.start();
